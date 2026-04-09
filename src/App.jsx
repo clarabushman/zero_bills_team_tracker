@@ -3,11 +3,14 @@ import {
   AlertCircle, CheckCircle2, XCircle, Clock, BarChart3, 
   BatteryWarning, Zap, ChevronDown, Filter, Car, 
   Settings, Gauge, Info, Search, AlertTriangle, Battery, 
-  ZapOff, Calendar, User, Building2, X, ArrowUpDown, Smile
+  ZapOff, Calendar, User, Building2, X, ArrowUpDown, Smile, MapPin
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
-// --- Utilities ---
+// --- Utilities & Configuration ---
+// For demonstration consistency with CSV date comparison, using a fixed "current date".
+// In a real Vercel deployment, you would typically use `new Date()`.
+const CURRENT_DATE_STRING = '2024-03-15'; 
 const parseCSV = (str) => {
   const arr = [];
   let quote = false;
@@ -29,6 +32,13 @@ const parseCSV = (str) => {
 const isZeroBills = (tariff) => String(tariff || '').toLowerCase().includes('zero');
 const isTrue = (val) => String(val).toUpperCase() === 'TRUE';
 const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim();
+const isDateStale = (dateStr) => {
+    if (!dateStr || dateStr.toLowerCase() === 'null') return true;
+    const readDate = new Date(dateStr);
+    const currentDate = new Date(CURRENT_DATE_STRING);
+    const daysOld = Math.floor((currentDate - readDate) / (1000 * 60 * 60 * 24));
+    return daysOld > 2;
+}
 
 export default function App() {
   const [data, setData] = useState([]);
@@ -100,21 +110,26 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
-    const today = new Date();
+    const currentDate = new Date(CURRENT_DATE_STRING);
     
     // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
     const zbAccounts = allAccounts.filter(r => isZeroBills(r.import_tariff));
     const stdAccounts = allAccounts.filter(r => r.import_tariff && !isZeroBills(r.import_tariff));
 
-    // Site Breakdown for Tab 1
+    // Site Breakdown for Tab 1 graphic (Horizontal Progress Bars -Portfolio view)
     const siteBreakdownOverview = {};
     allAccounts.forEach(r => {
       const site = r.site_name || 'Unknown';
-      if (!siteBreakdownOverview[site]) siteBreakdownOverview[site] = { name: site, total: 0, zb: 0, standard: 0 };
+      if (!siteBreakdownOverview[site]) siteBreakdownOverview[site] = { name: site, total: 0, zb: 0, pending: 0, zbData: [], pendingData: [] };
       siteBreakdownOverview[site].total++;
-      if (isZeroBills(r.import_tariff)) siteBreakdownOverview[site].zb++;
-      else siteBreakdownOverview[site].standard++;
+      if (isZeroBills(r.import_tariff)) {
+        siteBreakdownOverview[site].zb++;
+        siteBreakdownOverview[site].zbData.push(r);
+      } else {
+        siteBreakdownOverview[site].pending++;
+        siteBreakdownOverview[site].pendingData.push(r);
+      }
     });
 
     // Req 3: Tariff Issues
@@ -125,27 +140,51 @@ export default function App() {
       return impMismatch || expMismatch || devWrongTariff;
     });
 
-    // Req 4: EV
+    // Req 4: EV (Pie Chart)
     const evConfirmed = filteredData.filter(r => isTrue(r.ev_billed));
     const evSuspected = filteredData.filter(r => isTrue(r.suspected_ev));
     const noEv = filteredData.filter(r => !isTrue(r.ev_billed) && !isTrue(r.suspected_ev));
 
-    // Req 5: Battery (Updated to battery_signal)
+    // Req 5: Battery (Signal based, breakdown, site table)
     const totalBattery = filteredData.length;
     const battSetup = filteredData.filter(r => isTrue(r.battery_setup));
     const battOnline = filteredData.filter(r => isTrue(r.battery_setup) && isTrue(r.battery_signal));
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
+    // Battery Sites Breakdown (for Horizontal Bars)
+    const batterySiteSummary = {};
+    filteredData.forEach(r => {
+        const site = r.site_name || 'Unknown';
+        if (!batterySiteSummary[site]) {
+            batterySiteSummary[site] = { name: site, total: 0, online: 0, offline: 0, notSetup: 0, onlineData: [], offlineData: [], notSetupData: [] };
+        }
+        batterySiteSummary[site].total++;
+        if (isTrue(r.battery_setup)) {
+            if (isTrue(r.battery_signal)) {
+                batterySiteSummary[site].online++;
+                batterySiteSummary[site].onlineData.push(r);
+            } else {
+                batterySiteSummary[site].offline++;
+                batterySiteSummary[site].offlineData.push(r);
+            }
+        } else {
+            batterySiteSummary[site].notSetup++;
+            batterySiteSummary[site].notSetupData.push(r);
+        }
+    });
+
+    // Battery Problem Account List (Offline or Not Setup)
+    const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
+
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Smart Reads
-    const smartReadIssues = filteredData.filter(r => {
-      if (!r.last_smart_read) return true; // Flag if missing entirely
-      const readDate = new Date(r.last_smart_read);
-      const daysOld = (today - readDate) / (1000 * 60 * 60 * 24);
-      return daysOld > 2;
+    // Req 8: Missing Smart Reads (Checks both date types and dates)
+    const missingSmartReads = filteredData.filter(r => {
+        const impStale = isDateStale(r.import_last_smart_read_date);
+        const expStale = isDateStale(r.export_last_smart_read_date);
+        return impStale || expStale;
     });
 
     // Req 9: EOY Projection
@@ -160,11 +199,13 @@ export default function App() {
       tariffIssues, 
       evConfirmed, evSuspected, noEv,
       totalBattery, battSetup, battOnline, battOffline, battNotSetup,
-      missingMpans, smartReadIssues, eoyData, avgEoy
+      batterySiteSummary: Object.values(batterySiteSummary).sort((a,b) => b.total - a.total),
+      batteryProblemAccounts,
+      missingMpans, missingSmartReads, eoyData, avgEoy
     };
   }, [filteredData]);
 
-  // --- Modal Logic ---
+  // --- Modal Logic (req 7: Sorting, filtering, columns) ---
   const handleDrillDown = (title, list) => {
     setDrillDownTitle(title);
     setDrillDownData(list);
@@ -210,8 +251,10 @@ export default function App() {
   const DrillDownModal = () => {
     if (!drillDownData) return null;
     
-    // Hide contract info for standard tariff drilldown (Req 2)
-    const isStandard = drillDownTitle.includes('Standard');
+    // Hide contract info for specific overview lists (Req 2)
+    const isStandardOverview = drillDownTitle.includes('Standard Accounts');
+    const isTotalOverview = drillDownTitle.includes('All Accounts');
+    const hideContractInfo = isStandardOverview || isTotalOverview;
 
     const SortIcon = ({ colKey }) => (
       <ArrowUpDown size={12} className={`inline ml-1 ${sortConfig.key === colKey ? 'text-indigo-600' : 'text-slate-300'}`} />
@@ -235,11 +278,11 @@ export default function App() {
               <button onClick={() => setDrillDownData(null)} className="p-2 hover:bg-slate-200 rounded-full transition"><X size={20}/></button>
             </div>
           </div>
-          <div className="overflow-auto p-4">
+          <div className="overflow-auto p-4 flex-1">
             <table className="w-full text-sm text-left whitespace-nowrap">
               <thead className="bg-slate-100 text-slate-600 sticky top-0 z-10 shadow-sm cursor-pointer">
                 <tr>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('latest_account_number_for_address')}>Account <SortIcon colKey="latest_account_number_for_address"/></th>
+                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('latest_account_number_for_address')}>Account / MPAN <SortIcon colKey="latest_account_number_for_address"/></th>
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postal_number')}>Address <SortIcon colKey="postal_number"/></th>
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postcode')}>Postcode <SortIcon colKey="postcode"/></th>
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('site_name')}>Site <SortIcon colKey="site_name"/></th>
@@ -247,16 +290,16 @@ export default function App() {
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('import_tariff')}>Import Tariff <SortIcon colKey="import_tariff"/></th>
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('export_tariff')}>Export Tariff <SortIcon colKey="export_tariff"/></th>
                   
-                  {!isStandard && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_from')}>Valid From <SortIcon colKey="agreement_valid_from"/></th>}
-                  {!isStandard && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_to')}>Valid To <SortIcon colKey="agreement_valid_to"/></th>}
-                  {!isStandard && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_this_contract')}>Days (Contract) <SortIcon colKey="days_this_contract"/></th>}
-                  {!isStandard && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_on_tariff')}>Days (Tariff) <SortIcon colKey="days_on_tariff"/></th>}
+                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_from')}>Valid From <SortIcon colKey="agreement_valid_from"/></th>}
+                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_to')}>Valid To <SortIcon colKey="agreement_valid_to"/></th>}
+                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_this_contract')}>Days (Contract) <SortIcon colKey="days_this_contract"/></th>}
+                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_on_tariff')}>Days (Tariff) <SortIcon colKey="days_on_tariff"/></th>}
                   
                   <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('operations_team')}>Ops Team <SortIcon colKey="operations_team"/></th>
                   <th className="p-3 text-center">PSR</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 flex-1">
                 {processedModalData.map((row, i) => (
                   <tr key={i} className="hover:bg-slate-50">
                     <td className="p-3 font-medium text-slate-900">{row.latest_account_number_for_address || row.import_mpans}</td>
@@ -267,10 +310,10 @@ export default function App() {
                     <td className="p-3 max-w-[150px] truncate" title={row.import_tariff}>{row.import_tariff}</td>
                     <td className="p-3 max-w-[150px] truncate" title={row.export_tariff}>{row.export_tariff}</td>
                     
-                    {!isStandard && <td className="p-3">{row.agreement_valid_from}</td>}
-                    {!isStandard && <td className="p-3">{row.agreement_valid_to}</td>}
-                    {!isStandard && <td className="p-3">{row.days_this_contract}</td>}
-                    {!isStandard && <td className="p-3">{row.days_on_tariff}</td>}
+                    {!hideContractInfo && <td className="p-3">{row.agreement_valid_from}</td>}
+                    {!hideContractInfo && <td className="p-3">{row.agreement_valid_to}</td>}
+                    {!hideContractInfo && <td className="p-3">{row.days_this_contract}</td>}
+                    {!hideContractInfo && <td className="p-3">{row.days_on_tariff}</td>}
                     
                     <td className="p-3">{row.operations_team}</td>
                     <td className="p-3 text-center">{isTrue(row.is_psr) ? '✅' : '⬜'}</td>
@@ -311,7 +354,7 @@ export default function App() {
                 <div className="absolute right-0 mt-2 w-64 bg-white border shadow-xl rounded-lg p-2 max-h-64 overflow-y-auto z-50">
                   {filterOptions.tranches.map(t => (
                     <label key={t} className="flex items-center gap-2 p-2 hover:bg-slate-50 cursor-pointer rounded text-sm">
-                      <input type="checkbox" className="rounded text-indigo-600" checked={selectedTranches.has(t)} onChange={() => {
+                      <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500" checked={selectedTranches.has(t)} onChange={() => {
                         const next = new Set(selectedTranches);
                         next.has(t) ? next.delete(t) : next.add(t);
                         setSelectedTranches(next);
@@ -330,7 +373,7 @@ export default function App() {
                 <div className="absolute right-0 mt-2 w-64 bg-white border shadow-xl rounded-lg p-2 max-h-64 overflow-y-auto z-50">
                   {filterOptions.sites.map(s => (
                     <label key={s} className="flex items-center gap-2 p-2 hover:bg-slate-50 cursor-pointer rounded text-sm">
-                      <input type="checkbox" className="rounded text-indigo-600" checked={selectedSites.has(s)} onChange={() => {
+                      <input type="checkbox" className="rounded text-indigo-600 focus:ring-indigo-500" checked={selectedSites.has(s)} onChange={() => {
                         const next = new Set(selectedSites);
                         next.has(s) ? next.delete(s) : next.add(s);
                         setSelectedSites(next);
@@ -347,7 +390,7 @@ export default function App() {
       {/* Navigation Tabs */}
       <div className="max-w-[95%] mx-auto px-4 mt-6">
         <div className="flex border-b border-slate-200 overflow-x-auto hide-scrollbar">
-          {['Overview', 'Tariff Issues', 'EV', 'Battery Issues', 'Missing MPANs', 'Smart Reads', 'EOY Projection'].map(tab => (
+          {['Overview', 'Tariff Issues', 'EV', 'Battery Issues', 'Missing MPANs', 'Missing Smart Reads', 'EOY Projection'].map(tab => (
             <button 
               key={tab} 
               onClick={() => setActiveTab(tab)}
@@ -362,7 +405,7 @@ export default function App() {
       {/* Main Content Area */}
       <div className="max-w-[95%] mx-auto px-4 mt-6">
         
-        {/* Tab 1: Overview (Req 1, 2, 3) */}
+        {/* Tab 1: Overview (KPIs, site graphic, Req 1, 2, 3) */}
         {activeTab === 'Overview' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -394,25 +437,39 @@ export default function App() {
               </div>
             </div>
 
-            {/* Site & Tranche Portfolio View */}
+            {/* Site & Tranche Portfolio View graphic - horizontal bars as site/tranche summaries */}
             <div className="bg-white p-6 rounded-xl border shadow-sm">
-              <h3 className="font-bold text-slate-800 mb-6">Portfolio Breakdown by Site (Zero Bills vs Pending)</h3>
-              <div className="h-96 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={metrics.siteOverview} margin={{ top: 20, right: 30, left: 20, bottom: 50 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} tick={{fontSize: 12}} />
-                    <YAxis />
-                    <RechartsTooltip 
-                      formatter={(value, name) => [value, name === 'zb' ? 'Zero Bills' : 'Pending/Standard']}
-                      cursor={{fill: '#f1f5f9'}}
-                    />
-                    <Legend verticalAlign="top" height={36}/>
-                    <Bar dataKey="zb" name="Zero Bills" stackId="a" fill="#10b981" />
-                    <Bar dataKey="standard" name="Pending/Standard" stackId="a" fill="#f59e0b" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+                <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><MapPin className="text-indigo-500"/> Site Breakdown (Progress to Zero Bills)</h3>
+                <div className="space-y-5 max-h-96 overflow-y-auto pr-4">
+                    {metrics.siteOverview.map((site, i) => {
+                        const zbProgress = (site.zb / site.total) * 100 || 0;
+                        return (
+                            <div key={i} className="flex flex-col gap-1">
+                                <div className="flex justify-between text-sm items-end">
+                                    <span className="font-bold text-slate-700 truncate max-w-[50%]">{site.name}</span>
+                                    <span className="text-slate-500">
+                                        <span className="text-emerald-600 font-medium">{zbProgress.toFixed(0)}% Zero Bills</span> 
+                                        {' '}({site.total} homes)
+                                    </span>
+                                </div>
+                                <div className="w-full h-5 flex rounded-md overflow-hidden bg-slate-100 cursor-pointer shadow-inner">
+                                    <div 
+                                        className="bg-emerald-500 hover:opacity-80 transition" 
+                                        style={{width: `${(site.zb/site.total)*100}%`}} 
+                                        title={`${site.zb} Zero Bills`}
+                                        onClick={() => handleDrillDown(`${site.name} - Zero Bills`, site.zbData)}
+                                    ></div>
+                                    <div 
+                                        className="bg-orange-500 hover:opacity-80 transition" 
+                                        style={{width: `${(site.pending/site.total)*100}%`}} 
+                                        title={`${site.pending} Pending/Standard`}
+                                        onClick={() => handleDrillDown(`${site.name} - Pending/Standard`, site.pendingData)}
+                                    ></div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
             </div>
           </div>
         )}
@@ -431,8 +488,9 @@ export default function App() {
               <table className="w-full text-sm text-left whitespace-nowrap">
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
-                    <th className="p-3">Account</th>
+                    <th className="p-3">Account / MPAN</th>
                     <th className="p-3">Account Type</th>
+                    <th className="p-3">Address</th>
                     <th className="p-3">Import Tariff</th>
                     <th className="p-3">Export Tariff</th>
                     <th className="p-3">Agreement Valid To</th>
@@ -441,15 +499,16 @@ export default function App() {
                     <th className="p-3">Issue Flag</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody className="divide-y divide-slate-100 flex-1">
                   {metrics.tariffIssues.map((r, i) => {
                     const devWrong = String(r.account_type).toLowerCase() === 'developer' && isZeroBills(r.import_tariff);
                     const impMismatch = r.kraken_import_tariff_valid_to && r.kraken_import_tariff_valid_to !== r.agreement_valid_to;
                     const expMismatch = r.kraken_export_tariff_valid_to && r.kraken_export_tariff_valid_to !== r.agreement_valid_to;
                     return (
-                      <tr key={i} className="hover:bg-slate-50">
-                        <td className="p-3 font-medium">{r.latest_account_number_for_address}</td>
+                      <tr key={i} className="hover:bg-slate-50 flex-1">
+                        <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address || r.import_mpans}</td>
                         <td className="p-3 capitalize">{r.account_type}</td>
+                        <td className="p-3">{getAddress(r)}</td>
                         <td className="p-3 truncate max-w-[150px]" title={r.import_tariff}>{r.import_tariff}</td>
                         <td className="p-3 truncate max-w-[150px]" title={r.export_tariff}>{r.export_tariff}</td>
                         <td className="p-3 font-semibold">{r.agreement_valid_to}</td>
@@ -462,151 +521,305 @@ export default function App() {
                       </tr>
                     );
                   })}
-                  {metrics.tariffIssues.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">No issues found.</td></tr>}
+                  {metrics.tariffIssues.length === 0 && <tr><td colSpan="9" className="p-6 text-center text-slate-500">No issues found.</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
 
-        {/* Tab 3: EV (Req 4) */}
+        {/* Tab 3: EV (Req 4: Pie Chart) */}
         {activeTab === 'EV' && (
-          <div className="bg-white border rounded-xl shadow-sm p-6">
-            <h2 className="text-lg font-bold text-slate-800 mb-2 flex items-center gap-2"><Car className="text-indigo-500"/> EV Portfolio Status</h2>
-            <p className="text-sm text-slate-500 mb-6">Click on any bar to see the list of accounts in that segment.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            <div className="bg-white border rounded-xl shadow-sm p-6">
+                <h2 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2"><Car className="text-indigo-500"/> EV User Breakdown</h2>
+                <div className="h-72 w-full cursor-pointer">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                            <Pie 
+                                data={[
+                                    { name: 'Confirmed EVs', value: metrics.evConfirmed.length, list: metrics.evConfirmed },
+                                    { name: 'Suspected EVs', value: metrics.evSuspected.length, list: metrics.evSuspected },
+                                    { name: 'No EV Suspected', value: metrics.noEv.length, list: metrics.noEv }
+                                ]}
+                                cx="50%" cy="50%" innerRadius={70} outerRadius={100} paddingAngle={5} dataKey="value"
+                                label={({ payload, cx, x, y, textAnchor }) => (
+                                    <text x={x} y={y} cx={cx} textAnchor={textAnchor} dominantBaseline="central" className="text-xs font-semibold fill-slate-700">
+                                      {payload.value}
+                                    </text>
+                                  )}
+                                onClick={(data) => handleDrillDown(data.name, data.list)}
+                            >
+                                <Cell fill="#10b981" stroke="#fff" strokeWidth={2}/> {/* Emerald for Confirmed */}
+                                <Cell fill="#f59e0b" stroke="#fff" strokeWidth={2}/> {/* Amber for Suspected */}
+                                <Cell fill="#94a3b8" stroke="#fff" strokeWidth={2}/> {/* Slate for No EV */}
+                            </Pie>
+                            <RechartsTooltip formatter={(value, name) => [`${value} Accounts`, name]} />
+                            <Legend verticalAlign="bottom" height={36} wrapperStyle={{paddingTop: 10}}/>
+                        </PieChart>
+                    </ResponsiveContainer>
+                </div>
+                <p className="text-center text-xs text-slate-500 mt-2">Click chart segments to view account lists</p>
+            </div>
             
-            <div className="h-96 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart 
-                  data={[
-                    { name: 'Confirmed EVs', value: metrics.evConfirmed.length, list: metrics.evConfirmed, fill: '#10b981' },
-                    { name: 'Suspected EVs', value: metrics.evSuspected.length, list: metrics.evSuspected, fill: '#f59e0b' },
-                    { name: 'No EV Suspected', value: metrics.noEv.length, list: metrics.noEv, fill: '#94a3b8' }
-                  ]}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" tick={{fontSize: 14, fontWeight: 500}} />
-                  <YAxis />
-                  <RechartsTooltip cursor={{fill: '#f1f5f9'}} formatter={(val) => [`${val} Accounts`, 'Total']} />
-                  <Bar 
-                    dataKey="value" 
-                    onClick={(data) => handleDrillDown(data.payload.name, data.payload.list)}
-                    cursor="pointer"
-                  >
-                    {
-                      [metrics.evConfirmed, metrics.evSuspected, metrics.noEv].map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={['#10b981', '#f59e0b', '#94a3b8'][index]} />
-                      ))
-                    }
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+            <div className="space-y-4">
+              <div onClick={() => handleDrillDown('Confirmed EV Users', metrics.evConfirmed)} className="bg-white border border-emerald-200 p-6 rounded-xl shadow-sm flex justify-between items-center cursor-pointer hover:bg-emerald-50 transition">
+                <div>
+                  <h3 className="text-emerald-700 font-bold">Confirmed EVs</h3>
+                  <p className="text-emerald-600/70 text-sm">ev_billed is TRUE</p>
+                </div>
+                <div className="text-3xl font-bold text-emerald-600">{metrics.evConfirmed.length}</div>
+              </div>
+              <div onClick={() => handleDrillDown('Suspected EV Users', metrics.evSuspected)} className="bg-white border border-amber-200 p-6 rounded-xl shadow-sm flex justify-between items-center cursor-pointer hover:bg-amber-50 transition">
+                <div>
+                  <h3 className="text-amber-700 font-bold">Suspected EVs</h3>
+                  <p className="text-amber-600/70 text-sm">suspected_ev is TRUE</p>
+                </div>
+                <div className="text-3xl font-bold text-amber-600">{metrics.evSuspected.length}</div>
+              </div>
+              <div onClick={() => handleDrillDown('No EV Suspected Users', metrics.noEv)} className="bg-white border border-slate-300 p-6 rounded-xl shadow-sm flex justify-between items-center cursor-pointer hover:bg-slate-100 transition">
+                <div>
+                  <h3 className="text-slate-700 font-bold">No EV Suspected</h3>
+                  <p className="text-slate-600/70 text-sm">Not Confirmed or Suspected</p>
+                </div>
+                <div className="text-3xl font-bold text-slate-700">{metrics.noEv.length}</div>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Tab 4: Battery Issues (Req 5) */}
+        {/* Tab 4: Battery Issues (KPIs, graphic summary, new Detailed Tracker from photo) */}
         {activeTab === 'Battery Issues' && (
-          <div className="space-y-6">
+          <div className="space-y-6 flex-1 flex flex-col">
+            
+            {/* Top Stat Cards */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center">
-                <span className="text-slate-500 text-xs font-bold uppercase">Total Accounts</span>
-                <span className="text-2xl font-bold text-slate-900">{metrics.totalBattery}</span>
+                <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Total Portfolio</span>
+                <span className="text-2xl font-black text-slate-900">{metrics.totalBattery}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Setup', metrics.battSetup)} className="bg-white p-4 rounded-xl border border-indigo-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-indigo-50">
-                <span className="text-indigo-600 text-xs font-bold uppercase">Setup</span>
-                <span className="text-2xl font-bold text-indigo-700">{metrics.battSetup.length}</span>
+                <span className="text-indigo-600 text-xs font-bold uppercase tracking-wider mb-1">Setup</span>
+                <span className="text-2xl font-black text-indigo-700">{metrics.battSetup.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50">
-                <span className="text-emerald-600 text-xs font-bold uppercase">Online (Signal OK)</span>
-                <span className="text-2xl font-bold text-emerald-700">{metrics.battOnline.length}</span>
+                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online (Signal OK)</span>
+                <span className="text-2xl font-black text-emerald-700">{metrics.battOnline.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Offline', metrics.battOffline)} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-red-50">
-                <span className="text-red-600 text-xs font-bold uppercase">Setup but Offline</span>
-                <span className="text-2xl font-bold text-red-700">{metrics.battOffline.length}</span>
+                <span className="text-red-600 text-xs font-bold uppercase tracking-wider mb-1">Setup but Offline</span>
+                <span className="text-2xl font-black text-red-700">{metrics.battOffline.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Not Setup', metrics.battNotSetup)} className="bg-white p-4 rounded-xl border border-slate-300 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-slate-100">
-                <span className="text-slate-600 text-xs font-bold uppercase">Not Setup</span>
-                <span className="text-2xl font-bold text-slate-700">{metrics.battNotSetup.length}</span>
+                <span className="text-slate-600 text-xs font-bold uppercase tracking-wider mb-1">Not Setup</span>
+                <span className="text-2xl font-black text-slate-700">{metrics.battNotSetup.length}</span>
               </div>
             </div>
 
-            <div className="bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
-              <h3 className="font-bold text-slate-800 mb-4">Accounts Requiring Attention (Offline or Not Setup)</h3>
-              <div className="overflow-auto border border-slate-100 rounded-lg max-h-96">
-                <table className="w-full text-xs text-left whitespace-nowrap">
-                  <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm">
-                    <tr>
-                      <th className="p-3">Account</th>
-                      <th className="p-3">Site</th>
-                      <th className="p-3">Status</th>
-                      <th className="p-3" title="Days still without battery setup">Days w/o Setup</th>
-                      <th className="p-3" title="Days without setup in past (for online)">Past Days w/o Setup</th>
-                      <th className="p-3" title="% without setup">% Time w/o Setup</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal)).map((r, i) => (
-                      <tr key={i} className="hover:bg-slate-50">
-                        <td className="p-3 font-medium">{r.latest_account_number_for_address}</td>
-                        <td className="p-3">{r.site_name}</td>
-                        <td className="p-3 font-semibold">
-                          {!isTrue(r.battery_setup) ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
-                        </td>
-                        <td className="p-3 text-red-600 font-bold">{r.days_still_without_battery_setup}</td>
-                        <td className="p-3">{r.days_without_battery_setup_past}</td>
-                        <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {/* Graphics & Lists */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+              {/* Site summary view - horizontal bars */}
+              <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
+                  <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><MapPin className="text-indigo-500"/> Site Progress Summary</h3>
+                  <div className="space-y-5 flex-1 max-h-96 overflow-y-auto pr-4">
+                      {metrics.batterySiteSummary.map((site, i) => {
+                          const onlinePct = (site.online / site.total) * 100 || 0;
+                          return (
+                              <div key={i} className="flex flex-col gap-1 flex-1">
+                                  <div className="flex justify-between text-sm items-end flex-1">
+                                      <span className="font-bold text-slate-700 truncate max-w-[50%] flex-1">{site.name}</span>
+                                      <span className="text-slate-500 text-xs flex-1 text-right">
+                                          <span className="text-emerald-600 font-medium">{onlinePct.toFixed(0)}% Online</span> 
+                                          {' '}({site.total} homes)
+                                      </span>
+                                  </div>
+                                  <div className="w-full h-5 flex rounded-md overflow-hidden bg-slate-100 cursor-pointer shadow-inner flex-1">
+                                      <div 
+                                          className="bg-emerald-500 hover:opacity-80 transition" 
+                                          style={{width: `${(site.online/site.total)*100}%`}} 
+                                          title={`${site.online} Online`}
+                                          onClick={() => handleDrillDown(`${site.name} - Online`, site.onlineData)}
+                                      ></div>
+                                      <div 
+                                          className="bg-red-500 hover:opacity-80 transition" 
+                                          style={{width: `${(site.offline/site.total)*100}%`}} 
+                                          title={`${site.offline} Offline`}
+                                          onClick={() => handleDrillDown(`${site.name} - Offline`, site.offlineData)}
+                                      ></div>
+                                      <div 
+                                          className="bg-slate-300 hover:opacity-80 transition" 
+                                          style={{width: `${(site.notSetup/site.total)*100}%`}} 
+                                          title={`${site.notSetup} Not Setup`}
+                                          onClick={() => handleDrillDown(`${site.name} - Not Setup`, site.notSetupData)}
+                                      ></div>
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
               </div>
+
+              {/* Advanced Problem Account List */}
+              <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
+                <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts Requiring Attention</h3>
+                <div className="overflow-auto border border-slate-100 rounded-lg max-h-96">
+                  <table className="w-full text-xs text-left whitespace-nowrap">
+                    <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
+                      <tr>
+                        <th className="p-3">Account</th>
+                        <th className="p-3">Type</th>
+                        <th className="p-3">Address</th>
+                        <th className="p-3">Site</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3 text-red-600" title="Days still without battery setup">Days w/o Setup</th>
+                        <th className="p-3" title="Days without setup in past (for online)">Past Days w/o Setup</th>
+                        <th className="p-3" title="% without setup">% Time w/o Setup</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 flex-1">
+                      {metrics.batteryProblemAccounts.map((r, i) => (
+                        <tr key={i} className="hover:bg-slate-50">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                          <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3">{r.site_name}</td>
+                          <td className="p-3 font-semibold">
+                            {!isTrue(r.battery_setup) ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
+                          </td>
+                          <td className="p-3 text-red-600 font-black">{r.days_still_without_battery_setup}</td>
+                          <td className="p-3">{r.days_without_battery_setup_past}</td>
+                          <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Detailed Site Battery Tracker (From Photo style) */}
+            <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
+                <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-xl font-bold text-slate-800">Detailed Site Battery Tracker</h3>
+                    <div className="flex items-center gap-3 text-xs text-slate-500">
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm"></span> Online</div>
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-red-500 rounded-sm"></span> Offline</div>
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-300 rounded-sm"></span> Not Setup</div>
+                    </div>
+                </div>
+                <div className="overflow-auto border border-slate-100 rounded-lg flex-1">
+                    <table className="w-full text-sm text-left whitespace-nowrap">
+                        <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
+                            <tr>
+                                <th className="p-3 font-semibold text-xs uppercase tracking-wider">Company</th>
+                                <th className="p-3 font-semibold text-xs uppercase tracking-wider">Site (Tranche)</th>
+                                <th className="p-3 font-semibold text-xs uppercase tracking-wider text-center">Committed</th>
+                                <th className="p-3 font-semibold text-xs uppercase tracking-wider w-1/3">Status Breakdown</th>
+                                <th className="p-3 font-semibold text-xs uppercase tracking-wider text-right">Progress</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 flex-1">
+                            {metrics.batterySiteSummary.map((site, i) => {
+                                const onlinePct = (site.online / site.total) * 100 || 0;
+                                let progressBadgeColor = 'bg-red-100 text-red-800'; // Default for low/0%
+                                if (onlinePct === 100) progressBadgeColor = 'bg-emerald-100 text-emerald-800';
+                                else if (onlinePct >= 70) progressBadgeColor = 'bg-orange-100 text-orange-800'; // Close to green
+                                else if (onlinePct >= 30) progressBadgeColor = 'bg-amber-100 text-amber-800'; // Mid progress
+
+                                return (
+                                    <tr key={i} className="hover:bg-slate-50 transition flex-1">
+                                        <td className="p-3 font-medium text-slate-900">{site.company || 'N/A Company'}</td>
+                                        <td className="p-3">
+                                            <div className="text-sm font-semibold text-slate-800">{site.name}</div>
+                                            <div className="text-xs text-slate-500">{site.tranche || 'Unknown Tranche'}</div>
+                                        </td>
+                                        <td className="p-3 text-center text-lg font-black text-slate-700">{site.total}</td>
+                                        <td className="p-3">
+                                            {/* Status Breakdown Horizontal Bars - using photo styling */}
+                                            <div className="w-full h-6 flex rounded overflow-hidden bg-slate-100 cursor-pointer shadow-inner relative">
+                                                <div 
+                                                    className="bg-emerald-500 hover:opacity-85 transition" 
+                                                    style={{width: `${(site.online/site.total)*100}%`}} 
+                                                    title={`${site.online} Online`}
+                                                    onClick={() => handleDrillDown(`${site.name} - Online`, site.onlineData)}
+                                                ></div>
+                                                <div 
+                                                    className="bg-red-500 hover:opacity-85 transition" 
+                                                    style={{width: `${(site.offline/site.total)*100}%`}} 
+                                                    title={`${site.offline} Offline`}
+                                                    onClick={() => handleDrillDown(`${site.name} - Offline`, site.offlineData)}
+                                                ></div>
+                                                <div 
+                                                    className="bg-slate-300 hover:opacity-85 transition" 
+                                                    style={{width: `${(site.notSetup/site.total)*100}%`}} 
+                                                    title={`${site.notSetup} Not Setup`}
+                                                    onClick={() => handleDrillDown(`${site.name} - Not Setup`, site.notSetupData)}
+                                                ></div>
+                                            </div>
+                                        </td>
+                                        <td className="p-3 text-right">
+                                            {/* Progress Badge - conditional colors */}
+                                            <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold ${progressBadgeColor}`}>
+                                                {onlinePct.toFixed(1)}%
+                                            </span>
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
             </div>
           </div>
         )}
 
-        {/* Tab 5: Missing MPANs (Req 6) */}
+        {/* Tab 5: Missing MPANs (Req 6, 7: filter customer/dev, logic, columns) */}
         {activeTab === 'Missing MPANs' && (
-          <div className="bg-white border rounded-xl shadow-sm overflow-hidden">
+          <div className="bg-white border rounded-xl shadow-sm overflow-hidden flex flex-col flex-1">
             <div className="p-6 border-b flex justify-between items-center bg-slate-50">
-              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">Accounts Missing Export MPAN</h2>
+              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">Missing Export MPANs & Issues</h2>
               
               <div className="flex gap-2">
                 <select 
                   value={mpanTypeFilter} 
                   onChange={e => setMpanTypeFilter(e.target.value)}
-                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="All">All Types</option>
                   <option value="Developer">Developer Only</option>
                   <option value="Customer">Customer Only</option>
                 </select>
-                <button onClick={() => handleDrillDown('All Missing MPANs', metrics.missingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm hover:bg-slate-50">View Full Extracted List</button>
+                <button onClick={() => handleDrillDown('All Missing MPANs', metrics.missingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">View Extracted List</button>
               </div>
             </div>
             
-            <div className="overflow-x-auto p-4">
-              <table className="w-full text-sm text-left">
-                <thead className="bg-slate-100 text-slate-600">
+            <div className="overflow-auto p-4 flex-1">
+              <table className="w-full text-sm text-left flex-1 whitespace-nowrap">
+                <thead className="bg-slate-100 text-slate-600 sticky top-0 shadow-sm flex-1">
                   <tr>
-                    <th className="p-3">Account</th>
+                    <th className="p-3">Account / MPAN</th>
                     <th className="p-3">Type</th>
+                    <th className="p-3">Address</th>
+                    <th className="p-3">Postcode</th>
+                    <th className="p-3">Site</th>
                     <th className="p-3">Import Energisation</th>
                     <th className="p-3">Export Energisation</th>
                     <th className="p-3 bg-red-50">Detected Issues</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody className="divide-y divide-slate-100 flex-1">
                   {metrics.missingMpans
                     .filter(r => mpanTypeFilter === 'All' || String(r.account_type).toLowerCase() === mpanTypeFilter.toLowerCase())
                     .map((r, i) => {
                       const impDen = String(r.import_energisation_status).toLowerCase() === 'denergised';
                       const expDen = String(r.export_energisation_status).toLowerCase() === 'denergised';
                       return (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="p-3 font-medium">{r.latest_account_number_for_address}</td>
+                        <tr key={i} className="hover:bg-slate-50 flex-1">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address || r.import_mpans}</td>
                           <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3 font-medium text-slate-700">{r.postcode}</td>
+                          <td className="p-3 font-semibold text-indigo-700">{r.site_name}</td>
                           <td className={`p-3 ${impDen ? 'text-red-600 font-bold' : ''}`}>{r.import_energisation_status}</td>
                           <td className={`p-3 ${expDen ? 'text-red-600 font-bold' : ''}`}>{r.export_energisation_status}</td>
                           <td className="p-3 text-xs font-semibold text-red-600 bg-red-50/30">
@@ -616,50 +829,56 @@ export default function App() {
                         </tr>
                       );
                   })}
-                  {metrics.missingMpans.length === 0 && <tr><td colSpan="5" className="p-6 text-center text-slate-500">All accounts have an Export MPAN.</td></tr>}
+                  {metrics.missingMpans.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">All accounts have an Export MPAN.</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
 
-        {/* Tab 6: Smart Reads (Req 8) */}
-        {activeTab === 'Smart Reads' && (
-          <div className="bg-white border rounded-xl shadow-sm p-6">
+        {/* Tab 6: Missing Smart Reads (Req 8: Rename, logic both types, dates, success message) */}
+        {activeTab === 'Missing Smart Reads' && (
+          <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
              <div className="mb-6 flex justify-between items-center border-b pb-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-800">Stale Smart Reads (> 2 Days Old)</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking 'last_smart_read' to ensure active communications.</p>
+                <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
+                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Stale if > 2 days old (Reference: {CURRENT_DATE_STRING}).</p>
               </div>
             </div>
 
-            {metrics.smartReadIssues.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-emerald-600 bg-emerald-50 rounded-xl border border-emerald-100">
-                <Smile size={64} className="mb-4 text-emerald-500"/>
-                <h2 className="text-2xl font-bold">All meters online!</h2>
-                <p className="text-emerald-700/80 mt-2">No smart reads are older than 2 days.</p>
+            {metrics.missingSmartReads.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-emerald-600 bg-emerald-50 rounded-xl border border-emerald-100 flex-1">
+                <Smile size={80} className="mb-6 text-emerald-500"/>
+                <h2 className="text-3xl font-black">All smart meters online!</h2>
+                <p className="text-emerald-700/80 mt-2 font-medium">No smart read data is missing or stale.</p>
               </div>
             ) : (
-              <div className="overflow-x-auto border border-slate-100 rounded-lg">
-                <table className="w-full text-sm text-left whitespace-nowrap">
-                  <thead className="bg-slate-50 text-slate-600">
+              <div className="overflow-auto border border-slate-100 rounded-lg flex-1">
+                <table className="w-full text-sm text-left flex-1 whitespace-nowrap">
+                  <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
                     <tr>
                       <th className="p-3">Account</th>
+                      <th className="p-3">Type</th>
+                      <th className="p-3">Address</th>
+                      <th className="p-3">Postcode</th>
                       <th className="p-3">Site</th>
-                      <th className="p-3">Last Smart Read Date</th>
-                      <th className="p-3 text-red-600">Days Stale</th>
+                      <th className="p-3 text-center">Import Last Read</th>
+                      <th className="p-3 text-center">Export Last Read</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {metrics.smartReadIssues.map((r, i) => {
-                      const readDate = new Date(r.last_smart_read);
-                      const daysOld = r.last_smart_read ? Math.floor((new Date() - readDate) / (1000 * 60 * 60 * 24)) : 'Missing completely';
+                  <tbody className="divide-y divide-slate-100 flex-1">
+                    {metrics.missingSmartReads.map((r, i) => {
+                      const impStale = isDateStale(r.import_last_smart_read_date);
+                      const expStale = isDateStale(r.export_last_smart_read_date);
                       return (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="p-3 font-medium">{r.latest_account_number_for_address}</td>
-                          <td className="p-3">{r.site_name}</td>
-                          <td className="p-3 font-semibold">{r.last_smart_read || 'N/A'}</td>
-                          <td className="p-3 text-red-600 font-bold">{daysOld}</td>
+                        <tr key={i} className="hover:bg-slate-50 flex-1">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                          <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3">{r.postcode}</td>
+                          <td className="p-3 font-medium text-indigo-700">{r.site_name}</td>
+                          <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : ''}`}>{r.import_last_smart_read_date || 'N/A'}</td>
+                          <td className={`p-3 text-center font-semibold ${expStale ? 'text-red-600' : ''}`}>{r.export_last_smart_read_date || 'N/A'}</td>
                         </tr>
                       );
                     })}
@@ -670,27 +889,27 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 7: EOY Projection (Req 9) */}
+        {/* Tab 7: EOY Projection (Req 9: Order, null check, avg, graphic) */}
         {activeTab === 'EOY Projection' && (
-          <div className="bg-white border rounded-xl shadow-sm p-6">
+          <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
             <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
-                <p className="text-sm text-slate-500 mt-1">Highest to lowest. Null contract days excluded. Inner bar shows current progress.</p>
+                <p className="text-sm text-slate-500 mt-1">Ordered highest to lowest. Excludes accounts with null contract days. Inner bar shows current adjusted net progress.</p>
                 <div className="flex gap-4 mt-4 text-xs font-medium">
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded"></span> Over 4000</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-600 rounded"></span> 3500 - 4000</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-400 rounded"></span> 3000 - 3500</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded"></span> Under 3000</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded-sm"></span> Over 4000</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-600 rounded-sm"></span> 3500 - 4000</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-400 rounded-sm"></span> 3000 - 3500</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded-sm"></span> Under 3000</span>
                 </div>
               </div>
-              <div className="bg-slate-50 border border-slate-200 p-4 rounded-lg text-center">
-                <div className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">Portfolio Average EOY</div>
-                <div className="text-2xl font-black text-indigo-600">{metrics.avgEoy.toFixed(0)} <span className="text-sm text-slate-500 font-normal">kWh</span></div>
+              <div className="bg-indigo-50 border-2 border-indigo-100 px-6 py-5 rounded-xl text-center shadow-inner">
+                <div className="text-xs text-indigo-600 font-black uppercase tracking-widest mb-1.5">Portfolio Average EOY</div>
+                <div className="text-3xl font-black text-indigo-700">{metrics.avgEoy.toFixed(0)} <span className="text-xl text-slate-500 font-normal">kWh</span></div>
               </div>
             </div>
 
-            <div className="space-y-5 max-h-[600px] overflow-y-auto pr-4">
+            <div className="space-y-5 max-h-[600px] overflow-y-auto pr-4 flex-1">
               {metrics.eoyData.map((row, i) => {
                   const eoy = parseFloat(row.eoy_projected_net_import) || 0;
                   const currentNet = parseFloat(row.net_import_contract_ev_adjusted) || 0;
@@ -705,16 +924,19 @@ export default function App() {
                   innerWidthPct = Math.max(0, Math.min(innerWidthPct, 100)); 
 
                   return (
-                    <div key={i} className="flex flex-col gap-1">
-                      <div className="flex justify-between items-end text-sm">
-                        <span className="font-semibold text-slate-700">{row.latest_account_number_for_address}</span>
-                        <div className="text-right">
+                    <div key={i} className="flex flex-col gap-1 flex-1">
+                      <div className="flex justify-between items-end text-sm items-end flex-1 gap-2">
+                        <div>
+                            <span className="font-semibold text-slate-700">{row.latest_account_number_for_address}</span>
+                            <span className="text-xs text-slate-500 ml-2">({getAddress(row)}, {row.postcode}, {row.site_name})</span>
+                        </div>
+                        <div className="text-right whitespace-nowrap">
                           <span className={`font-bold ${eoy > 4000 ? 'text-red-600' : 'text-slate-700'}`}>{eoy.toFixed(0)} kWh EOY</span>
                           <span className="text-xs text-slate-500 ml-2">({row.days_this_contract} days through contract)</span>
                         </div>
                       </div>
                       
-                      <div className="w-full h-6 bg-slate-100 rounded border border-slate-200 relative overflow-hidden">
+                      <div className="w-full h-6 bg-slate-100 rounded border border-slate-200 relative overflow-hidden flex-1 shadow-inner">
                         <div className={`h-full absolute top-0 left-0 ${bgColor} opacity-30`} style={{width: `${outerWidthPct}%`}}></div>
                         <div className={`h-full absolute top-0 left-0 ${bgColor} transition-all border-r-2 border-white/50`} style={{width: `${outerWidthPct * (innerWidthPct/100)}%`}} title={`Current adjusted net: ${currentNet.toFixed(0)} kWh`}></div>
                         <div className="absolute top-0 bottom-0 border-l-2 border-red-500 border-dashed z-10" style={{left: `${(4000/4500)*100}%`}} title="4000 Fair Use Limit"></div>
