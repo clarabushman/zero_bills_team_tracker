@@ -8,6 +8,8 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
 // --- Utilities & Configuration ---
+// For demonstration consistency with CSV date comparison, using a fixed "current date".
+// In a real Vercel deployment, you would typically use `new Date()`.
 const CURRENT_DATE_STRING = '2024-03-15'; 
 const parseCSV = (str) => {
   const arr = [];
@@ -108,6 +110,7 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
+    const currentDate = new Date(CURRENT_DATE_STRING);
     
     // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
@@ -186,14 +189,14 @@ export default function App() {
 
     // Req 9: EOY Projection
     const eoyData = filteredData
-      .filter(r => {
-        const eoyVal = parseFloat(r.eoy_projected_net_import);
-        const daysContract = r.days_this_contract ? String(r.days_this_contract).toLowerCase() : 'null';
-        // Only include those greater than 0
-        return !isNaN(eoyVal) && eoyVal > 0 && daysContract !== 'null';
-      })
+      .filter(r => 
+        r.eoy_projected_net_import && 
+        parseFloat(r.eoy_projected_net_import) > 0 && // Excludes 0 kWh projections
+        r.days_this_contract && 
+        String(r.days_this_contract).toLowerCase() !== 'null'
+      )
       .sort((a,b) => parseFloat(b.eoy_projected_net_import) - parseFloat(a.eoy_projected_net_import));
-    
+      
     const avgEoy = eoyData.length > 0 ? (eoyData.reduce((acc, curr) => acc + parseFloat(curr.eoy_projected_net_import), 0) / eoyData.length) : 0;
 
     return {
@@ -784,4 +787,172 @@ export default function App() {
               <div className="flex gap-2">
                 <select 
                   value={mpanTypeFilter} 
-                  onChange={e => setMpanTypeFilter(e
+                  onChange={e => setMpanTypeFilter(e.target.value)}
+                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="All">All Types</option>
+                  <option value="Developer">Developer Only</option>
+                  <option value="Customer">Customer Only</option>
+                </select>
+                <button onClick={() => handleDrillDown('All Missing MPANs', metrics.missingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">View Extracted List</button>
+              </div>
+            </div>
+            
+            <div className="overflow-auto p-4 flex-1">
+              <table className="w-full text-sm text-left flex-1 whitespace-nowrap">
+                <thead className="bg-slate-100 text-slate-600 sticky top-0 shadow-sm flex-1">
+                  <tr>
+                    <th className="p-3">Account / MPAN</th>
+                    <th className="p-3">Type</th>
+                    <th className="p-3">Address</th>
+                    <th className="p-3">Postcode</th>
+                    <th className="p-3">Site</th>
+                    <th className="p-3">Import Energisation</th>
+                    <th className="p-3">Export Energisation</th>
+                    <th className="p-3 bg-red-50">Detected Issues</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 flex-1">
+                  {metrics.missingMpans
+                    .filter(r => mpanTypeFilter === 'All' || String(r.account_type).toLowerCase() === mpanTypeFilter.toLowerCase())
+                    .map((r, i) => {
+                      const impDen = String(r.import_energisation_status).toLowerCase() === 'denergised';
+                      const expDen = String(r.export_energisation_status).toLowerCase() === 'denergised';
+                      return (
+                        <tr key={i} className="hover:bg-slate-50 flex-1">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address || r.import_mpans}</td>
+                          <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3 font-medium text-slate-700">{r.postcode}</td>
+                          <td className="p-3 font-semibold text-indigo-700">{r.site_name}</td>
+                          <td className={`p-3 ${impDen ? 'text-red-600 font-bold' : ''}`}>{r.import_energisation_status}</td>
+                          <td className={`p-3 ${expDen ? 'text-red-600 font-bold' : ''}`}>{r.export_energisation_status}</td>
+                          <td className="p-3 text-xs font-semibold text-red-600 bg-red-50/30">
+                            <div>Missing Export MPAN</div>
+                            {(impDen || expDen) && <div>Denergised Status detected</div>}
+                          </td>
+                        </tr>
+                      );
+                  })}
+                  {metrics.missingMpans.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">All accounts have an Export MPAN.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 6: Missing Smart Reads (Req 8: Rename, logic both types, dates, success message) */}
+        {activeTab === 'Missing Smart Reads' && (
+          <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
+             <div className="mb-6 flex justify-between items-center border-b pb-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
+                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Stale if > 2 days old (Reference: {CURRENT_DATE_STRING}).</p>
+              </div>
+            </div>
+
+            {metrics.missingSmartReads.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-emerald-600 bg-emerald-50 rounded-xl border border-emerald-100 flex-1">
+                <Smile size={80} className="mb-6 text-emerald-500"/>
+                <h2 className="text-3xl font-black">All smart meters online!</h2>
+                <p className="text-emerald-700/80 mt-2 font-medium">No smart read data is missing or stale.</p>
+              </div>
+            ) : (
+              <div className="overflow-auto border border-slate-100 rounded-lg flex-1">
+                <table className="w-full text-sm text-left flex-1 whitespace-nowrap">
+                  <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
+                    <tr>
+                      <th className="p-3">Account</th>
+                      <th className="p-3">Type</th>
+                      <th className="p-3">Address</th>
+                      <th className="p-3">Postcode</th>
+                      <th className="p-3">Site</th>
+                      <th className="p-3 text-center">Import Last Read</th>
+                      <th className="p-3 text-center">Export Last Read</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 flex-1">
+                    {metrics.missingSmartReads.map((r, i) => {
+                      const impStale = isDateStale(r.import_last_smart_read_date);
+                      const expStale = isDateStale(r.export_last_smart_read_date);
+                      return (
+                        <tr key={i} className="hover:bg-slate-50 flex-1">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                          <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3">{r.postcode}</td>
+                          <td className="p-3 font-medium text-indigo-700">{r.site_name}</td>
+                          <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : ''}`}>{r.import_last_smart_read_date || 'N/A'}</td>
+                          <td className={`p-3 text-center font-semibold ${expStale ? 'text-red-600' : ''}`}>{r.export_last_smart_read_date || 'N/A'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 7: EOY Projection */}
+        {activeTab === 'EOY Projection' && (
+          <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
+            <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
+                <p className="text-sm text-slate-500 mt-1">Ordered highest to lowest. Excludes accounts projecting 0 kWh.</p>
+                <div className="flex gap-4 mt-4 text-xs font-medium">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded-sm"></span> Over 4000</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-orange-500 rounded-sm"></span> 3500 - 4000</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-400 rounded-sm"></span> 3000 - 3500</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded-sm"></span> Under 3000</span>
+                </div>
+              </div>
+              <div className="bg-indigo-50 border-2 border-indigo-100 px-6 py-5 rounded-xl text-center shadow-inner">
+                <div className="text-xs text-indigo-600 font-black uppercase tracking-widest mb-1.5">Portfolio Average EOY</div>
+                <div className="text-3xl font-black text-indigo-700">{metrics.avgEoy.toFixed(0)} <span className="text-xl text-slate-500 font-normal">kWh</span></div>
+              </div>
+            </div>
+
+            <div className="space-y-6 max-h-[600px] overflow-y-auto pr-4 flex-1">
+              {metrics.eoyData.map((row, i) => {
+                  const eoy = parseFloat(row.eoy_projected_net_import) || 0;
+                  
+                  let bgColor = 'bg-emerald-500'; 
+                  if (eoy > 4000) bgColor = 'bg-red-500';
+                  else if (eoy >= 3500) bgColor = 'bg-orange-500'; 
+                  else if (eoy >= 3000) bgColor = 'bg-amber-400'; 
+
+                  // Cap outer width visual at 100% based on a 4500 scale
+                  const barWidthPct = Math.min((eoy / 4500) * 100, 100); 
+
+                  return (
+                    <div key={i} className="flex flex-col gap-2 flex-1">
+                      <div className="flex justify-between items-end flex-1 gap-2">
+                        <div className="font-bold text-slate-800 text-base">
+                            {row.latest_account_number_for_address || row.import_mpans || 'Unknown Account'}
+                        </div>
+                        <div className="text-right whitespace-nowrap">
+                          <span className={`font-black text-base ${eoy > 4000 ? 'text-red-600' : 'text-slate-700'}`}>{eoy.toFixed(0)} kWh EOY</span>
+                          <span className="text-sm text-slate-500 ml-2 font-medium">({row.days_this_contract} days through contract)</span>
+                        </div>
+                      </div>
+                      
+                      {/* Fixed, solid, highly visible bar */}
+                      <div className="w-full h-6 bg-slate-100 rounded-md border border-slate-200 relative overflow-hidden flex-1 shadow-inner">
+                        <div className={`h-full absolute top-0 left-0 ${bgColor} transition-all`} style={{width: `${barWidthPct}%`}}></div>
+                        <div className="absolute top-0 bottom-0 border-l-2 border-red-500 border-dashed z-10" style={{left: `${(4000/4500)*100}%`}} title="4000 Fair Use Limit"></div>
+                      </div>
+                    </div>
+                  );
+              })}
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      <DrillDownModal />
+    </div>
+  );
+}
