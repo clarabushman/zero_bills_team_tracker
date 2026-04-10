@@ -4,7 +4,7 @@ import {
   BatteryWarning, Zap, ChevronDown, Filter, Car, 
   Settings, Gauge, Info, Search, AlertTriangle, Battery, 
   ZapOff, Calendar, User, Building2, X, ArrowUpDown, Smile, MapPin,
-  Download // Added Download icon
+  Download
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
@@ -167,7 +167,7 @@ export default function App() {
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown (Pulls dynamic company and tranche)
+    // Battery Sites Breakdown
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
@@ -198,7 +198,7 @@ export default function App() {
     // Battery Problem Account List
     const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
 
-    // Past Battery Setup Delays (for Final Tab)
+    // Past Battery Setup Delays
     const pastBatteryDelays = filteredData.filter(r => {
         const pastDays = String(r.days_without_battery_setup_past || '').trim().toLowerCase();
         return pastDays && pastDays !== 'null' && pastDays !== '0';
@@ -218,7 +218,7 @@ export default function App() {
     const eoyData = filteredData
       .filter(r => 
         r.eoy_projected_net_import && 
-        parseCleanNumber(r.eoy_projected_net_import) !== 0 && // Allows < 0, excludes exactly 0
+        parseCleanNumber(r.eoy_projected_net_import) !== 0 && // Includes negative, excludes exact 0
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
       )
@@ -644,7 +644,7 @@ export default function App() {
                 <span className="text-2xl font-black text-indigo-700">{metrics.battSetup.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50">
-                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online</span>
+                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online (Signal OK)</span>
                 <span className="text-2xl font-black text-emerald-700">{metrics.battOnline.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Offline', metrics.battOffline)} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-red-50">
@@ -877,7 +877,7 @@ export default function App() {
              <div className="mb-6 flex justify-between items-center border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Offline if not HH readings for > 2 days).</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Stale if > 2 days old (Reference: {CURRENT_DATE_STRING}).</p>
               </div>
             </div>
 
@@ -929,11 +929,11 @@ export default function App() {
           <div className="flex flex-col gap-6">
             
             {/* Top Section: EOY Projections */}
-            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col h-[500px]">
+            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col h-[600px]">
               <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
                 <div>
                   <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
-                  <p className="text-sm text-slate-500 mt-1">Breakdown of EOY Projected Net Import. Fair Use Allowance = 4000kWh.</p>
+                  <p className="text-sm text-slate-500 mt-1">Ordered highest to lowest. Shows current Net Import inside Projected total.</p>
                   <div className="flex gap-4 mt-4 text-xs font-medium">
                     <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#ef4444'}}></span> Over 4000</span>
                     <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#f97316'}}></span> 3500 - 4000</span>
@@ -951,30 +951,64 @@ export default function App() {
                 {metrics.eoyData.map((row, i) => {
                     const eoy = parseCleanNumber(row.eoy_projected_net_import);
                     
+                    // Fallback across potential column names for current net contract
+                    const currentNet = parseCleanNumber(row.net_import_contract) || parseCleanNumber(row.net_import_contract_ev_adjusted) || 0;
+                    
                     let barColor = '#10b981'; // emerald-500
                     if (eoy > 4000) barColor = '#ef4444'; // red-500
                     else if (eoy >= 3500) barColor = '#f97316'; // orange-500
                     else if (eoy >= 3000) barColor = '#fbbf24'; // amber-400
 
-                    const barWidthPct = Math.max(0, Math.min((eoy / 4500) * 100, 100)); 
+                    // Dynamic scaling to fit the highest bars
+                    const MAX_SCALE = Math.max(5000, eoy + 500); 
+                    const eoyWidthPct = Math.max(0, Math.min((eoy / MAX_SCALE) * 100, 100)); 
+                    const currentWidthPct = Math.max(0, Math.min((currentNet / MAX_SCALE) * 100, 100)); 
+                    const limitLinePct = (4000 / MAX_SCALE) * 100;
 
                     return (
-                      <div key={i} className="flex flex-col gap-2 flex-1">
+                      <div key={i} className="flex flex-col gap-2 flex-1 mb-2">
                         <div className="flex justify-between items-end flex-1 gap-2">
                           <div className="font-bold text-slate-800 text-base">
                               {row.latest_account_number_for_address || row.import_mpans || 'Unknown Account'}
+                              {eoy < 0 && <span className="ml-3 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">Net Exporter</span>}
                           </div>
                           <div className="text-right whitespace-nowrap">
                             <span className={`font-black text-base ${eoy > 4000 ? 'text-red-600' : 'text-slate-700'}`}>
-                                {eoy.toFixed(0)} kWh EOY
+                                Projected: {eoy.toFixed(0)} kWh
                             </span>
-                            <span className="text-sm text-slate-500 ml-2 font-medium">({row.days_this_contract} days through contract)</span>
+                            <span className="text-sm text-slate-500 ml-2 font-medium">({row.days_this_contract} days into contract)</span>
                           </div>
                         </div>
                         
-                        <div className="w-full h-6 bg-slate-200 rounded-md border border-slate-300 relative overflow-hidden flex-1 shadow-inner">
-                          <div className="h-full absolute top-0 left-0 transition-all" style={{ width: `${barWidthPct}%`, backgroundColor: barColor }}></div>
-                          <div className="absolute top-0 bottom-0 border-l-2 border-red-600 border-dashed z-10" style={{left: `${(4000/4500)*100}%`}} title="4000 Fair Use Limit"></div>
+                        <div className="w-full h-8 bg-slate-100 rounded-md border border-slate-200 relative overflow-hidden flex-1 shadow-inner group">
+                          
+                          {/* Semi-transparent outer bar for the full EOY projection */}
+                          <div 
+                            className="h-full absolute top-0 left-0 transition-all opacity-30" 
+                            style={{ width: `${eoyWidthPct}%`, backgroundColor: barColor }}
+                            title={`Projected EOY: ${eoy.toFixed(0)} kWh`}
+                          ></div>
+                          
+                          {/* Solid inner bar for CURRENT Net Import */}
+                          <div 
+                            className="h-full absolute top-0 left-0 transition-all flex items-center justify-end pr-2" 
+                            style={{ width: `${currentWidthPct}%`, backgroundColor: barColor }}
+                            title={`Current Net Import: ${currentNet.toFixed(0)} kWh`}
+                          >
+                             {currentWidthPct > 5 && <span className="text-xs font-bold text-white shadow-sm">{currentNet.toFixed(0)}</span>}
+                          </div>
+
+                          <div 
+                            className="absolute top-0 bottom-0 border-l-2 border-red-600 border-dashed z-10" 
+                            style={{left: `${limitLinePct}%`}} 
+                            title="4000 Fair Use Limit"
+                          ></div>
+                        </div>
+
+                        {/* Tiny legend under each bar for maximum clarity */}
+                        <div className="flex justify-between text-xs text-slate-500">
+                           <span>Current: {currentNet.toFixed(0)} kWh</span>
+                           <span>Allowance Limit: 4000 kWh</span>
                         </div>
                       </div>
                     );
