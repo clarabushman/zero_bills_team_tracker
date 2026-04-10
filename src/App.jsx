@@ -969,7 +969,7 @@ export default function App() {
                     else if (eoy >= 2000) barColor = '#facc15'; // yellow-400
 
                     // Dynamic scaling to fit the highest bars and ensure room for text
-                    const MAX_SCALE = Math.max(4500, eoy + 1000); 
+                    const MAX_SCALE = Math.max(5000, eoy + 1500); 
                     const eoyWidthPct = Math.max(0, Math.min((eoy / MAX_SCALE) * 100, 100)); 
                     const currentWidthPct = Math.max(0, Math.min((currentNet / MAX_SCALE) * 100, 100)); 
 
@@ -983,7 +983,8 @@ export default function App() {
                           </div>
                         </div>
                         
-                        <div className="w-full h-8 bg-slate-100 rounded-md border border-slate-200 relative flex-1 shadow-inner">
+                        {/* FIX applied here: added min-h-[32px] and shrink-0 to prevent collapsing */}
+                        <div className="w-full min-h-[32px] shrink-0 bg-slate-100 rounded-md border border-slate-200 relative shadow-inner">
                           
                           {/* Solid bar for EOY Projection */}
                           <div 
