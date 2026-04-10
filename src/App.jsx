@@ -3,7 +3,8 @@ import {
   AlertCircle, CheckCircle2, XCircle, Clock, BarChart3, 
   BatteryWarning, Zap, ChevronDown, Filter, Car, 
   Settings, Gauge, Info, Search, AlertTriangle, Battery, 
-  ZapOff, Calendar, User, Building2, X, ArrowUpDown, Smile, MapPin
+  ZapOff, Calendar, User, Building2, X, ArrowUpDown, Smile, MapPin,
+  Download // Added Download icon
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
@@ -88,7 +89,16 @@ export default function App() {
         const rawHeaders = rows[0].map(h => h?.trim());
         const parsed = rows.slice(1).filter(r => r.length > 1).map(row => {
           let obj = {};
-          rawHeaders.forEach((h, i) => obj[h] = row[i]?.trim());
+          rawHeaders.forEach((h, i) => {
+              let val = row[i]?.trim();
+              
+              // Standardize empty/null tranches to 'Not on Tariff'
+              if (h === 'tranche' && (!val || val.toLowerCase() === 'null')) {
+                  val = 'Not on Tariff';
+              }
+              
+              obj[h] = val;
+          });
           return obj;
         });
         setData(parsed);
@@ -157,12 +167,18 @@ export default function App() {
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown
+    // Battery Sites Breakdown (Pulls dynamic company and tranche)
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
         if (!batterySiteSummary[site]) {
-            batterySiteSummary[site] = { name: site, total: 0, online: 0, offline: 0, notSetup: 0, onlineData: [], offlineData: [], notSetupData: [] };
+            batterySiteSummary[site] = { 
+                name: site, 
+                company: r.company || 'N/A Company',
+                tranche: r.tranche || 'Not on Tariff',
+                total: 0, online: 0, offline: 0, notSetup: 0, 
+                onlineData: [], offlineData: [], notSetupData: [] 
+            };
         }
         batterySiteSummary[site].total++;
         if (isTrue(r.battery_setup)) {
@@ -181,6 +197,12 @@ export default function App() {
 
     // Battery Problem Account List
     const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
+
+    // Past Battery Setup Delays (for Final Tab)
+    const pastBatteryDelays = filteredData.filter(r => {
+        const pastDays = String(r.days_without_battery_setup_past || '').trim().toLowerCase();
+        return pastDays && pastDays !== 'null' && pastDays !== '0';
+    }).sort((a,b) => parseFloat(b.days_without_battery_setup_past) - parseFloat(a.days_without_battery_setup_past));
 
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
@@ -210,7 +232,7 @@ export default function App() {
       evConfirmed, evSuspected, noEv,
       totalBattery, battSetup, battOnline, battOffline, battNotSetup,
       batterySiteSummary: Object.values(batterySiteSummary).sort((a,b) => b.total - a.total),
-      batteryProblemAccounts,
+      batteryProblemAccounts, pastBatteryDelays,
       missingMpans, missingSmartReads, eoyData, avgEoy
     };
   }, [filteredData]);
@@ -417,6 +439,18 @@ export default function App() {
         {/* Tab 1: Overview */}
         {activeTab === 'Overview' && (
           <div className="space-y-6">
+            
+            {/* Download Button Row */}
+            <div className="flex justify-end">
+              <a 
+                href="/data.csv" 
+                download="data.csv" 
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition shadow-sm text-sm font-semibold"
+              >
+                <Download size={16} /> Download Raw Data (CSV)
+              </a>
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div onClick={() => handleDrillDown('All Accounts', metrics.allAccounts)} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm cursor-pointer hover:border-indigo-400 hover:shadow-md transition">
                 <div className="flex justify-between items-start mb-4">
@@ -610,7 +644,7 @@ export default function App() {
                 <span className="text-2xl font-black text-indigo-700">{metrics.battSetup.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50">
-                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online (Signal OK)</span>
+                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online</span>
                 <span className="text-2xl font-black text-emerald-700">{metrics.battOnline.length}</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Offline', metrics.battOffline)} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-red-50">
@@ -731,10 +765,10 @@ export default function App() {
 
                                 return (
                                     <tr key={i} className="hover:bg-slate-50 transition flex-1">
-                                        <td className="p-3 font-medium text-slate-900">{site.company || 'N/A Company'}</td>
+                                        <td className="p-3 font-medium text-slate-900">{site.company}</td>
                                         <td className="p-3">
                                             <div className="text-sm font-semibold text-slate-800">{site.name}</div>
-                                            <div className="text-xs text-slate-500">{site.tranche || 'Unknown Tranche'}</div>
+                                            <div className="text-xs text-slate-500">{site.tranche}</div>
                                         </td>
                                         <td className="p-3 text-center text-lg font-black text-slate-700">{site.total}</td>
                                         <td className="p-3">
@@ -843,7 +877,7 @@ export default function App() {
              <div className="mb-6 flex justify-between items-center border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Stale if > 2 days old (Reference: {CURRENT_DATE_STRING}).</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Offline if not HH readings for > 2 days).</p>
               </div>
             </div>
 
@@ -890,62 +924,99 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 7: EOY Projection */}
+        {/* Tab 7: EOY Projection & Past Delays */}
         {activeTab === 'EOY Projection' && (
-          <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
-            <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
-              <div>
-                <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
-                <p className="text-sm text-slate-500 mt-1">Ordered highest to lowest. Excludes accounts projecting exactly 0 kWh.</p>
-                <div className="flex gap-4 mt-4 text-xs font-medium">
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#ef4444'}}></span> Over 4000</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#f97316'}}></span> 3500 - 4000</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#fbbf24'}}></span> 3000 - 3500</span>
-                  <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#10b981'}}></span> Under 3000</span>
+          <div className="flex flex-col gap-6">
+            
+            {/* Top Section: EOY Projections */}
+            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col h-[500px]">
+              <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
+                  <p className="text-sm text-slate-500 mt-1">Breakdown of EOY Projected Net Import. Fair Use Allowance = 4000kWh.</p>
+                  <div className="flex gap-4 mt-4 text-xs font-medium">
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#ef4444'}}></span> Over 4000</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#f97316'}}></span> 3500 - 4000</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#fbbf24'}}></span> 3000 - 3500</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#10b981'}}></span> Under 3000</span>
+                  </div>
+                </div>
+                <div className="bg-indigo-50 border-2 border-indigo-100 px-6 py-5 rounded-xl text-center shadow-inner">
+                  <div className="text-xs text-indigo-600 font-black uppercase tracking-widest mb-1.5">Portfolio Average EOY</div>
+                  <div className="text-3xl font-black text-indigo-700">{metrics.avgEoy.toFixed(0)} <span className="text-xl text-slate-500 font-normal">kWh</span></div>
                 </div>
               </div>
-              <div className="bg-indigo-50 border-2 border-indigo-100 px-6 py-5 rounded-xl text-center shadow-inner">
-                <div className="text-xs text-indigo-600 font-black uppercase tracking-widest mb-1.5">Portfolio Average EOY</div>
-                <div className="text-3xl font-black text-indigo-700">{metrics.avgEoy.toFixed(0)} <span className="text-xl text-slate-500 font-normal">kWh</span></div>
+
+              <div className="space-y-6 overflow-y-auto pr-4 flex-1">
+                {metrics.eoyData.map((row, i) => {
+                    const eoy = parseCleanNumber(row.eoy_projected_net_import);
+                    
+                    let barColor = '#10b981'; // emerald-500
+                    if (eoy > 4000) barColor = '#ef4444'; // red-500
+                    else if (eoy >= 3500) barColor = '#f97316'; // orange-500
+                    else if (eoy >= 3000) barColor = '#fbbf24'; // amber-400
+
+                    const barWidthPct = Math.max(0, Math.min((eoy / 4500) * 100, 100)); 
+
+                    return (
+                      <div key={i} className="flex flex-col gap-2 flex-1">
+                        <div className="flex justify-between items-end flex-1 gap-2">
+                          <div className="font-bold text-slate-800 text-base">
+                              {row.latest_account_number_for_address || row.import_mpans || 'Unknown Account'}
+                          </div>
+                          <div className="text-right whitespace-nowrap">
+                            <span className={`font-black text-base ${eoy > 4000 ? 'text-red-600' : 'text-slate-700'}`}>
+                                {eoy.toFixed(0)} kWh EOY
+                            </span>
+                            <span className="text-sm text-slate-500 ml-2 font-medium">({row.days_this_contract} days through contract)</span>
+                          </div>
+                        </div>
+                        
+                        <div className="w-full h-6 bg-slate-200 rounded-md border border-slate-300 relative overflow-hidden flex-1 shadow-inner">
+                          <div className="h-full absolute top-0 left-0 transition-all" style={{ width: `${barWidthPct}%`, backgroundColor: barColor }}></div>
+                          <div className="absolute top-0 bottom-0 border-l-2 border-red-600 border-dashed z-10" style={{left: `${(4000/4500)*100}%`}} title="4000 Fair Use Limit"></div>
+                        </div>
+                      </div>
+                    );
+                })}
               </div>
             </div>
 
-            <div className="space-y-6 max-h-[600px] overflow-y-auto pr-4 flex-1">
-              {metrics.eoyData.map((row, i) => {
-                  const eoy = parseCleanNumber(row.eoy_projected_net_import);
-                  
-                  // Using exact hex codes so Tailwind cannot purge them out!
-                  let barColor = '#10b981'; // emerald-500 (under 3000, including negative)
-                  if (eoy > 4000) barColor = '#ef4444'; // red-500
-                  else if (eoy >= 3500) barColor = '#f97316'; // orange-500
-                  else if (eoy >= 3000) barColor = '#fbbf24'; // amber-400
-
-                  // Calculate width. Math.max(0, ...) prevents negative percentages which break CSS
-                  const barWidthPct = Math.max(0, Math.min((eoy / 4500) * 100, 100)); 
-
-                  return (
-                    <div key={i} className="flex flex-col gap-2 flex-1">
-                      <div className="flex justify-between items-end flex-1 gap-2">
-                        <div className="font-bold text-slate-800 text-base">
-                            {row.latest_account_number_for_address || row.import_mpans || 'Unknown Account'}
-                        </div>
-                        <div className="text-right whitespace-nowrap">
-                          <span className={`font-black text-base ${eoy > 4000 ? 'text-red-600' : 'text-slate-700'}`}>
-                              {eoy.toFixed(0)} kWh EOY
-                          </span>
-                          <span className="text-sm text-slate-500 ml-2 font-medium">({row.days_this_contract} days through contract)</span>
-                        </div>
-                      </div>
-                      
-                      {/* Fixed, solid, highly visible bar using inline styles to override Tailwind issues */}
-                      <div className="w-full h-6 bg-slate-200 rounded-md border border-slate-300 relative overflow-hidden flex-1 shadow-inner">
-                        <div className="h-full absolute top-0 left-0 transition-all" style={{ width: `${barWidthPct}%`, backgroundColor: barColor }}></div>
-                        <div className="absolute top-0 bottom-0 border-l-2 border-red-600 border-dashed z-10" style={{left: `${(4000/4500)*100}%`}} title="4000 Fair Use Limit"></div>
-                      </div>
-                    </div>
-                  );
-              })}
+            {/* Bottom Section: Past Battery Setup Delays */}
+            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col">
+                <div className="mb-4">
+                    <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Clock className="text-amber-500"/> Past Battery Setup Delay</h2>
+                    <p className="text-sm text-slate-500 mt-1">Accounts with historical delays in getting the battery online.</p>
+                </div>
+                <div className="overflow-auto border border-slate-100 rounded-lg max-h-80">
+                    <table className="w-full text-sm text-left whitespace-nowrap">
+                        <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm">
+                            <tr>
+                                <th className="p-3 font-semibold">Account</th>
+                                <th className="p-3 font-semibold">Type</th>
+                                <th className="p-3 font-semibold">Address</th>
+                                <th className="p-3 font-semibold">Site</th>
+                                <th className="p-3 font-semibold text-amber-600">Past Setup Delay (Days)</th>
+                                <th className="p-3 font-semibold">% Delay Time</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {metrics.pastBatteryDelays.map((r, i) => (
+                                <tr key={i} className="hover:bg-slate-50">
+                                    <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                                    <td className="p-3 capitalize">{r.account_type}</td>
+                                    <td className="p-3">{getAddress(r)}</td>
+                                    <td className="p-3">{r.site_name}</td>
+                                    <td className="p-3 font-bold text-amber-600">{r.days_without_battery_setup_past}</td>
+                                    <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
+                                </tr>
+                            ))}
+                            {metrics.pastBatteryDelays.length === 0 && <tr><td colSpan="6" className="p-6 text-center text-slate-500">No historical delays found.</td></tr>}
+                        </tbody>
+                    </table>
+                </div>
             </div>
+            
           </div>
         )}
 
