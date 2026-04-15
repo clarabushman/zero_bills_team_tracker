@@ -38,12 +38,29 @@ const isZeroBills = (tariff) => String(tariff || '').toLowerCase().includes('zer
 const isTrue = (val) => String(val).toUpperCase() === 'TRUE';
 const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim();
 
-// Updated to use the actual current date and check for > 3 days
+// Stale date checker with UK date handling and strict midnight calendar math
 const isDateStale = (dateStr) => {
-    if (!dateStr || dateStr.toLowerCase() === 'null') return true;
-    const readDate = new Date(dateStr);
-    const currentDate = new Date(); // Dynamically gets today's real date
-    const daysOld = Math.floor((currentDate - readDate) / (1000 * 60 * 60 * 24));
+    if (!dateStr || String(dateStr).toLowerCase() === 'null') return true;
+    
+    // Safely handle potential UK formats (DD/MM/YYYY)
+    let safeDateStr = String(dateStr).trim();
+    if (safeDateStr.includes('/')) {
+        const parts = safeDateStr.split(/[ /]/);
+        if (parts.length === 3 && parts[2].length === 4) {
+            safeDateStr = `${parts[2]}-${parts[1]}-${parts[0]}`; // Convert to YYYY-MM-DD
+        }
+    }
+    
+    const readDate = new Date(safeDateStr);
+    if (isNaN(readDate.getTime())) return true; // Flag if date is completely invalid
+
+    const currentDate = new Date();
+    
+    // Strip hours/minutes to strictly compare whole calendar days
+    currentDate.setHours(0, 0, 0, 0);
+    readDate.setHours(0, 0, 0, 0);
+
+    const daysOld = Math.floor((currentDate.getTime() - readDate.getTime()) / (1000 * 60 * 60 * 24));
     return daysOld > 3; 
 }
 
@@ -126,6 +143,7 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
+    
     // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
     const zbAccounts = allAccounts.filter(r => isZeroBills(r.import_tariff));
@@ -166,7 +184,7 @@ export default function App() {
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown (Pulls dynamic company and tranche)
+    // Battery Sites Breakdown
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
@@ -206,10 +224,13 @@ export default function App() {
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Missing Smart Reads (Checks BOTH import and export for > 3 days)
+    // Req 8: Missing Smart Reads (Only checks export if they actually have an export MPAN)
     const missingSmartReads = filteredData.filter(r => {
         const impStale = isDateStale(r.import_last_smart_read_date);
-        const expStale = isDateStale(r.export_last_smart_read_date);
+        
+        const hasExportMpan = r.export_mpan && String(r.export_mpan).toLowerCase() !== 'null';
+        const expStale = hasExportMpan ? isDateStale(r.export_last_smart_read_date) : false;
+        
         return impStale || expStale;
     });
 
@@ -217,13 +238,12 @@ export default function App() {
     const eoyData = filteredData
       .filter(r => 
         r.eoy_projected_net_import && 
-        parseCleanNumber(r.eoy_projected_net_import) !== 0 && // Allows < 0, excludes exactly 0
+        parseCleanNumber(r.eoy_projected_net_import) !== 0 && 
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
       )
       .sort((a,b) => parseCleanNumber(b.eoy_projected_net_import) - parseCleanNumber(a.eoy_projected_net_import));
       
-    // Explicitly isolate Portfolio Average EOY calculation to strictly ignore null/0 values across the entire filtered portfolio
     const validEoyForAvg = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         String(r.eoy_projected_net_import).toLowerCase() !== 'null' && 
@@ -263,7 +283,6 @@ export default function App() {
     if (!drillDownData) return [];
     let processed = [...drillDownData];
     
-    // Search Filter
     if (modalSearch) {
       const lowerSearch = modalSearch.toLowerCase();
       processed = processed.filter(row => 
@@ -272,7 +291,6 @@ export default function App() {
       );
     }
 
-    // Sort
     if (sortConfig.key) {
       processed.sort((a, b) => {
         let valA = a[sortConfig.key] || '';
@@ -448,7 +466,6 @@ export default function App() {
         {activeTab === 'Overview' && (
           <div className="space-y-6">
             
-            {/* Download Button Row */}
             <div className="flex justify-end">
               <a 
                 href="/data.csv" 
@@ -912,7 +929,9 @@ export default function App() {
                   <tbody className="divide-y divide-slate-100 flex-1">
                     {metrics.missingSmartReads.map((r, i) => {
                       const impStale = isDateStale(r.import_last_smart_read_date);
-                      const expStale = isDateStale(r.export_last_smart_read_date);
+                      const hasExportMpan = r.export_mpan && String(r.export_mpan).toLowerCase() !== 'null';
+                      const expStale = hasExportMpan ? isDateStale(r.export_last_smart_read_date) : false;
+                      
                       return (
                         <tr key={i} className="hover:bg-slate-50 flex-1">
                           <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
