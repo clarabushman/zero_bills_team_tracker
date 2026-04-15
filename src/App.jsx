@@ -9,7 +9,6 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip as RechartsTooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
 // --- Utilities & Configuration ---
-const CURRENT_DATE_STRING = '2024-03-15'; 
 const parseCSV = (str) => {
   const arr = [];
   let quote = false;
@@ -38,12 +37,14 @@ const parseCleanNumber = (val) => {
 const isZeroBills = (tariff) => String(tariff || '').toLowerCase().includes('zero');
 const isTrue = (val) => String(val).toUpperCase() === 'TRUE';
 const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim();
+
+// Updated to use the actual current date and check for > 3 days
 const isDateStale = (dateStr) => {
     if (!dateStr || dateStr.toLowerCase() === 'null') return true;
     const readDate = new Date(dateStr);
-    const currentDate = new Date(CURRENT_DATE_STRING);
+    const currentDate = new Date(); // Dynamically gets today's real date
     const daysOld = Math.floor((currentDate - readDate) / (1000 * 60 * 60 * 24));
-    return daysOld > 2;
+    return daysOld > 3; 
 }
 
 export default function App() {
@@ -125,8 +126,6 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
-    const currentDate = new Date(CURRENT_DATE_STRING);
-    
     // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
     const zbAccounts = allAccounts.filter(r => isZeroBills(r.import_tariff));
@@ -207,7 +206,7 @@ export default function App() {
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Missing Smart Reads
+    // Req 8: Missing Smart Reads (Checks BOTH import and export for > 3 days)
     const missingSmartReads = filteredData.filter(r => {
         const impStale = isDateStale(r.import_last_smart_read_date);
         const expStale = isDateStale(r.export_last_smart_read_date);
@@ -886,7 +885,7 @@ export default function App() {
              <div className="mb-6 flex justify-between items-center border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import/export dates. Stale if > 2 days old (Reference: {CURRENT_DATE_STRING}).</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old.</p>
               </div>
             </div>
 
@@ -969,7 +968,7 @@ export default function App() {
                     else if (eoy >= 2000) barColor = '#facc15'; // yellow-400
 
                     // Dynamic scaling to fit the highest bars and ensure room for text
-                    const MAX_SCALE = Math.max(5000, eoy + 1500); 
+                    const MAX_SCALE = Math.max(4500, eoy + 1000); 
                     const eoyWidthPct = Math.max(0, Math.min((eoy / MAX_SCALE) * 100, 100)); 
                     const currentWidthPct = Math.max(0, Math.min((currentNet / MAX_SCALE) * 100, 100)); 
 
@@ -983,7 +982,6 @@ export default function App() {
                           </div>
                         </div>
                         
-                        {/* FIX applied here: added min-h-[32px] and shrink-0 to prevent collapsing */}
                         <div className="w-full min-h-[32px] shrink-0 bg-slate-100 rounded-md border border-slate-200 relative shadow-inner">
                           
                           {/* Solid bar for EOY Projection */}
