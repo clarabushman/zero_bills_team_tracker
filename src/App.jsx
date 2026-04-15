@@ -43,7 +43,7 @@ const isDateStale = (dateStr) => {
     const readDate = new Date(dateStr);
     const currentDate = new Date(CURRENT_DATE_STRING);
     const daysOld = Math.floor((currentDate - readDate) / (1000 * 60 * 60 * 24));
-    return daysOld > 2;
+    return daysOld > 3;
 }
 
 export default function App() {
