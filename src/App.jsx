@@ -38,31 +38,34 @@ const isZeroBills = (tariff) => String(tariff || '').toLowerCase().includes('zer
 const isTrue = (val) => String(val).toUpperCase() === 'TRUE';
 const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim();
 
-// Stale date checker with UK date handling and strict midnight calendar math
+// NEW Robust Stale Date Checker (> 3 Days)
 const isDateStale = (dateStr) => {
-    if (!dateStr || String(dateStr).toLowerCase() === 'null' || String(dateStr).trim() === '') return true;
+    if (!dateStr || String(dateStr).trim().toLowerCase() === 'null' || String(dateStr).trim() === '') return true;
     
-    // Safely handle potential UK formats (DD/MM/YYYY)
     let safeDateStr = String(dateStr).trim();
     if (safeDateStr.includes('/')) {
         const parts = safeDateStr.split(/[ /]/);
         if (parts.length === 3 && parts[2].length === 4) {
-            safeDateStr = `${parts[2]}-${parts[1]}-${parts[0]}`; // Convert to YYYY-MM-DD
+            safeDateStr = `${parts[2]}-${parts[1]}-${parts[0]}`; 
         }
     }
     
     const readDate = new Date(safeDateStr);
-    if (isNaN(readDate.getTime())) return true; // Flag if date is completely invalid
+    if (isNaN(readDate.getTime())) return true; 
 
     const currentDate = new Date();
-    
-    // Strip hours/minutes to strictly compare whole calendar days
     currentDate.setHours(0, 0, 0, 0);
     readDate.setHours(0, 0, 0, 0);
 
     const daysOld = Math.floor((currentDate.getTime() - readDate.getTime()) / (1000 * 60 * 60 * 24));
     return daysOld > 3; 
 }
+
+// NEW Robust MPAN Checker
+const hasValidMpan = (val1, val2) => {
+    const check = (v) => v && String(v).trim() !== '' && String(v).trim().toLowerCase() !== 'null';
+    return check(val1) || check(val2);
+};
 
 export default function App() {
   const [data, setData] = useState([]);
@@ -79,7 +82,7 @@ export default function App() {
   // Tab-Specific Filters & Search States
   const [mpanTypeFilter, setMpanTypeFilter] = useState('All'); 
   const [eoySearchQuery, setEoySearchQuery] = useState('');
-  const [eoySortBy, setEoySortBy] = useState('usage_desc'); // usage_desc, usage_asc, days_desc, days_asc
+  const [eoySortBy, setEoySortBy] = useState('usage_desc');
 
   // Global Portfolio Filters
   const [selectedTranches, setSelectedTranches] = useState(new Set());
@@ -111,12 +114,9 @@ export default function App() {
           let obj = {};
           rawHeaders.forEach((h, i) => {
               let val = row[i]?.trim();
-              
-              // Standardize empty/null tranches to 'Not on Tariff'
               if (h === 'tranche' && (!val || val.toLowerCase() === 'null')) {
                   val = 'Not on Tariff';
               }
-              
               obj[h] = val;
           });
           return obj;
@@ -185,7 +185,7 @@ export default function App() {
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown (Pulls dynamic company and tranche)
+    // Battery Sites Breakdown
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
@@ -225,21 +225,24 @@ export default function App() {
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Missing Smart Reads (Only checks MPANs that actually exist)
+    // NEW Req 8: Missing Smart Reads
     const missingSmartReads = filteredData.filter(r => {
-        const hasImport = r.import_mpans && String(r.import_mpans).trim() !== '' && String(r.import_mpans).trim().toLowerCase() !== 'null';
-        const hasExport = r.export_mpan && String(r.export_mpan).trim() !== '' && String(r.export_mpan).trim().toLowerCase() !== 'null';
+        // 1. Confirm if the meters actually exist (checking singular and plural column names just in case)
+        const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
+        const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
 
-        const impStale = hasImport ? isDateStale(r.import_last_smart_read_date) : false;
-        const expStale = hasExport ? isDateStale(r.export_last_smart_read_date) : false;
+        // 2. Only check the date if the meter exists
+        const impStale = hasImport && isDateStale(r.import_last_smart_read_date);
+        const expStale = hasExport && isDateStale(r.export_last_smart_read_date);
 
+        // 3. Flag account if either existing meter is stale
         return impStale || expStale;
     });
 
-    // Req 9: EOY Projection Chart Data (Base filtered list before sorting/searching)
+    // Req 9: EOY Projection Chart Data
     const eoyData = filteredData.filter(r => 
         r.eoy_projected_net_import && 
-        parseCleanNumber(r.eoy_projected_net_import) !== 0 && // Allows < 0, excludes exactly 0
+        parseCleanNumber(r.eoy_projected_net_import) !== 0 &&
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
     );
@@ -270,7 +273,6 @@ export default function App() {
   const processedEoyData = useMemo(() => {
     let processed = [...metrics.eoyData];
 
-    // Apply Search Filter
     if (eoySearchQuery) {
         const lowerSearch = eoySearchQuery.toLowerCase();
         processed = processed.filter(row => {
@@ -280,7 +282,6 @@ export default function App() {
         });
     }
 
-    // Apply Sorting
     if (eoySortBy === 'usage_desc') {
         processed.sort((a, b) => parseCleanNumber(b.eoy_projected_net_import) - parseCleanNumber(a.eoy_projected_net_import));
     } else if (eoySortBy === 'usage_asc') {
@@ -313,7 +314,6 @@ export default function App() {
     if (!drillDownData) return [];
     let processed = [...drillDownData];
     
-    // Search Filter
     if (modalSearch) {
       const lowerSearch = modalSearch.toLowerCase();
       processed = processed.filter(row => 
@@ -322,7 +322,6 @@ export default function App() {
       );
     }
 
-    // Sort
     if (sortConfig.key) {
       processed.sort((a, b) => {
         let valA = a[sortConfig.key] || '';
@@ -960,12 +959,12 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 flex-1">
                     {metrics.missingSmartReads.map((r, i) => {
-                      // Safely verify if MPANs actually exist before checking if their dates are stale
-                      const hasImport = r.import_mpans && String(r.import_mpans).trim() !== '' && String(r.import_mpans).trim().toLowerCase() !== 'null';
-                      const hasExport = r.export_mpan && String(r.export_mpan).trim() !== '' && String(r.export_mpan).trim().toLowerCase() !== 'null';
+                      // NEW ROBUST LOGIC: Verifies MPANs exist before evaluating dates
+                      const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
+                      const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
 
-                      const impStale = hasImport ? isDateStale(r.import_last_smart_read_date) : false;
-                      const expStale = hasExport ? isDateStale(r.export_last_smart_read_date) : false;
+                      const impStale = hasImport && isDateStale(r.import_last_smart_read_date);
+                      const expStale = hasExport && isDateStale(r.export_last_smart_read_date);
                       
                       return (
                         <tr key={i} className="hover:bg-slate-50 flex-1">
@@ -975,7 +974,7 @@ export default function App() {
                           <td className="p-3">{r.postcode}</td>
                           <td className="p-3 font-medium text-indigo-700">{r.site_name}</td>
                           
-                          {/* If MPAN is missing, show a gray "No MPAN". Otherwise show the date/missing flag */}
+                          {/* Clean display handling */}
                           <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : (!hasImport ? 'text-slate-400 italic' : '')}`}>
                             {hasImport ? (r.import_last_smart_read_date || 'Missing') : 'No MPAN'}
                           </td>
@@ -1015,7 +1014,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* NEW Controls: Search and Sort */}
+              {/* Controls: Search and Sort */}
               <div className="flex flex-col md:flex-row gap-4 mb-6">
                   <div className="relative flex-1 max-w-md">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
@@ -1043,7 +1042,6 @@ export default function App() {
                 {processedEoyData.map((row, i) => {
                     const eoy = parseCleanNumber(row.eoy_projected_net_import);
                     
-                    // Fallback across potential column names for current net contract
                     const currentNet = parseCleanNumber(row.net_import_contract) || parseCleanNumber(row.net_import_contract_ev_adjusted) || 0;
                     
                     let barColor = '#10b981'; // emerald-500
@@ -1051,7 +1049,6 @@ export default function App() {
                     else if (eoy >= 3000) barColor = '#ea580c'; // dark orange (orange-600)
                     else if (eoy >= 2000) barColor = '#facc15'; // yellow-400
 
-                    // Dynamic scaling to fit the highest bars and ensure room for text
                     const MAX_SCALE = Math.max(4500, eoy + 1000); 
                     const eoyWidthPct = Math.max(0, Math.min((eoy / MAX_SCALE) * 100, 100)); 
                     const currentWidthPct = Math.max(0, Math.min((currentNet / MAX_SCALE) * 100, 100)); 
@@ -1068,13 +1065,11 @@ export default function App() {
                         
                         <div className="w-full min-h-[32px] shrink-0 bg-slate-100 rounded-md border border-slate-200 relative shadow-inner">
                           
-                          {/* Solid bar for EOY Projection */}
                           <div 
                             className="h-full absolute top-0 left-0 transition-all rounded-l-md" 
                             style={{ width: `${eoyWidthPct}%`, backgroundColor: barColor }}
                           ></div>
                           
-                          {/* EOY Value at the end of the bar */}
                           <div 
                             className="absolute top-0 bottom-0 flex items-center pl-2 whitespace-nowrap font-black text-slate-800 drop-shadow-sm text-sm" 
                             style={{ left: `${eoyWidthPct}%` }}
@@ -1082,7 +1077,6 @@ export default function App() {
                              {eoy.toFixed(0)} kWh
                           </div>
 
-                          {/* Dotted line for CURRENT Net Import */}
                           <div 
                             className="absolute top-0 bottom-0 border-l-[3px] border-slate-800 border-dotted z-10" 
                             style={{left: `${currentWidthPct}%`}} 
@@ -1093,7 +1087,6 @@ export default function App() {
                              </div>
                           </div>
                           
-                          {/* 4000 Fair Use Threshold Line */}
                           <div 
                             className="absolute top-0 bottom-0 border-l-2 border-red-600 border-dashed opacity-50 pointer-events-none" 
                             style={{left: `${(4000/MAX_SCALE)*100}%`}} 
