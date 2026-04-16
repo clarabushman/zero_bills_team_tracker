@@ -40,7 +40,7 @@ const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim
 
 // Stale date checker with UK date handling and strict midnight calendar math
 const isDateStale = (dateStr) => {
-    if (!dateStr || String(dateStr).toLowerCase() === 'null') return true;
+    if (!dateStr || String(dateStr).toLowerCase() === 'null' || String(dateStr).trim() === '') return true;
     
     // Safely handle potential UK formats (DD/MM/YYYY)
     let safeDateStr = String(dateStr).trim();
@@ -76,10 +76,12 @@ export default function App() {
   const [modalSearch, setModalSearch] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
 
-  // Missing MPANs tab specific filter
+  // Tab-Specific Filters & Search States
   const [mpanTypeFilter, setMpanTypeFilter] = useState('All'); 
+  const [eoySearchQuery, setEoySearchQuery] = useState('');
+  const [eoySortBy, setEoySortBy] = useState('usage_desc'); // usage_desc, usage_asc, days_desc, days_asc
 
-  // Filters
+  // Global Portfolio Filters
   const [selectedTranches, setSelectedTranches] = useState(new Set());
   const [selectedSites, setSelectedSites] = useState(new Set());
   const [trancheOpen, setTrancheOpen] = useState(false);
@@ -143,7 +145,6 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
-    
     // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
     const zbAccounts = allAccounts.filter(r => isZeroBills(r.import_tariff));
@@ -184,7 +185,7 @@ export default function App() {
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown
+    // Battery Sites Breakdown (Pulls dynamic company and tranche)
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
@@ -224,26 +225,26 @@ export default function App() {
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Missing Smart Reads (Only checks export if they actually have an export MPAN)
+    // Req 8: Missing Smart Reads (Only checks MPANs that actually exist)
     const missingSmartReads = filteredData.filter(r => {
-        const impStale = isDateStale(r.import_last_smart_read_date);
-        
-        const hasExportMpan = r.export_mpan && String(r.export_mpan).toLowerCase() !== 'null';
-        const expStale = hasExportMpan ? isDateStale(r.export_last_smart_read_date) : false;
-        
+        const hasImport = r.import_mpans && String(r.import_mpans).trim() !== '' && String(r.import_mpans).trim().toLowerCase() !== 'null';
+        const hasExport = r.export_mpan && String(r.export_mpan).trim() !== '' && String(r.export_mpan).trim().toLowerCase() !== 'null';
+
+        const impStale = hasImport ? isDateStale(r.import_last_smart_read_date) : false;
+        const expStale = hasExport ? isDateStale(r.export_last_smart_read_date) : false;
+
         return impStale || expStale;
     });
 
-    // Req 9: EOY Projection Chart Data
-    const eoyData = filteredData
-      .filter(r => 
+    // Req 9: EOY Projection Chart Data (Base filtered list before sorting/searching)
+    const eoyData = filteredData.filter(r => 
         r.eoy_projected_net_import && 
-        parseCleanNumber(r.eoy_projected_net_import) !== 0 && 
+        parseCleanNumber(r.eoy_projected_net_import) !== 0 && // Allows < 0, excludes exactly 0
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
-      )
-      .sort((a,b) => parseCleanNumber(b.eoy_projected_net_import) - parseCleanNumber(a.eoy_projected_net_import));
+    );
       
+    // Explicitly isolate Portfolio Average EOY calculation
     const validEoyForAvg = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         String(r.eoy_projected_net_import).toLowerCase() !== 'null' && 
@@ -265,6 +266,35 @@ export default function App() {
     };
   }, [filteredData]);
 
+  // --- EOY Projection Searching & Sorting ---
+  const processedEoyData = useMemo(() => {
+    let processed = [...metrics.eoyData];
+
+    // Apply Search Filter
+    if (eoySearchQuery) {
+        const lowerSearch = eoySearchQuery.toLowerCase();
+        processed = processed.filter(row => {
+            const accNum = String(row.latest_account_number_for_address || '').toLowerCase();
+            const mpanNum = String(row.import_mpans || '').toLowerCase();
+            return accNum.includes(lowerSearch) || mpanNum.includes(lowerSearch);
+        });
+    }
+
+    // Apply Sorting
+    if (eoySortBy === 'usage_desc') {
+        processed.sort((a, b) => parseCleanNumber(b.eoy_projected_net_import) - parseCleanNumber(a.eoy_projected_net_import));
+    } else if (eoySortBy === 'usage_asc') {
+        processed.sort((a, b) => parseCleanNumber(a.eoy_projected_net_import) - parseCleanNumber(b.eoy_projected_net_import));
+    } else if (eoySortBy === 'days_desc') {
+        processed.sort((a, b) => parseCleanNumber(b.days_this_contract) - parseCleanNumber(a.days_this_contract));
+    } else if (eoySortBy === 'days_asc') {
+        processed.sort((a, b) => parseCleanNumber(a.days_this_contract) - parseCleanNumber(b.days_this_contract));
+    }
+
+    return processed;
+  }, [metrics.eoyData, eoySearchQuery, eoySortBy]);
+
+
   // --- Modal Logic ---
   const handleDrillDown = (title, list) => {
     setDrillDownTitle(title);
@@ -283,6 +313,7 @@ export default function App() {
     if (!drillDownData) return [];
     let processed = [...drillDownData];
     
+    // Search Filter
     if (modalSearch) {
       const lowerSearch = modalSearch.toLowerCase();
       processed = processed.filter(row => 
@@ -291,6 +322,7 @@ export default function App() {
       );
     }
 
+    // Sort
     if (sortConfig.key) {
       processed.sort((a, b) => {
         let valA = a[sortConfig.key] || '';
@@ -902,7 +934,7 @@ export default function App() {
              <div className="mb-6 flex justify-between items-center border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old.</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old. (Safely ignores missing MPANs).</p>
               </div>
             </div>
 
@@ -928,19 +960,28 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 flex-1">
                     {metrics.missingSmartReads.map((r, i) => {
-                      const impStale = isDateStale(r.import_last_smart_read_date);
-                      const hasExportMpan = r.export_mpan && String(r.export_mpan).toLowerCase() !== 'null';
-                      const expStale = hasExportMpan ? isDateStale(r.export_last_smart_read_date) : false;
+                      // Safely verify if MPANs actually exist before checking if their dates are stale
+                      const hasImport = r.import_mpans && String(r.import_mpans).trim() !== '' && String(r.import_mpans).trim().toLowerCase() !== 'null';
+                      const hasExport = r.export_mpan && String(r.export_mpan).trim() !== '' && String(r.export_mpan).trim().toLowerCase() !== 'null';
+
+                      const impStale = hasImport ? isDateStale(r.import_last_smart_read_date) : false;
+                      const expStale = hasExport ? isDateStale(r.export_last_smart_read_date) : false;
                       
                       return (
                         <tr key={i} className="hover:bg-slate-50 flex-1">
-                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address || r.import_mpans}</td>
                           <td className="p-3 capitalize">{r.account_type}</td>
                           <td className="p-3">{getAddress(r)}</td>
                           <td className="p-3">{r.postcode}</td>
                           <td className="p-3 font-medium text-indigo-700">{r.site_name}</td>
-                          <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : ''}`}>{r.import_last_smart_read_date || 'N/A'}</td>
-                          <td className={`p-3 text-center font-semibold ${expStale ? 'text-red-600' : ''}`}>{r.export_last_smart_read_date || 'N/A'}</td>
+                          
+                          {/* If MPAN is missing, show a gray "No MPAN". Otherwise show the date/missing flag */}
+                          <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : (!hasImport ? 'text-slate-400 italic' : '')}`}>
+                            {hasImport ? (r.import_last_smart_read_date || 'Missing') : 'No MPAN'}
+                          </td>
+                          <td className={`p-3 text-center font-semibold ${expStale ? 'text-red-600' : (!hasExport ? 'text-slate-400 italic' : '')}`}>
+                            {hasExport ? (r.export_last_smart_read_date || 'Missing') : 'No MPAN'}
+                          </td>
                         </tr>
                       );
                     })}
@@ -974,8 +1015,32 @@ export default function App() {
                 </div>
               </div>
 
+              {/* NEW Controls: Search and Sort */}
+              <div className="flex flex-col md:flex-row gap-4 mb-6">
+                  <div className="relative flex-1 max-w-md">
+                      <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
+                      <input 
+                          type="text" 
+                          placeholder="Search by Account Number or MPAN..." 
+                          value={eoySearchQuery} 
+                          onChange={e => setEoySearchQuery(e.target.value)}
+                          className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                  </div>
+                  <select 
+                      value={eoySortBy} 
+                      onChange={e => setEoySortBy(e.target.value)}
+                      className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
+                  >
+                      <option value="usage_desc">Highest to Lowest EOY Usage</option>
+                      <option value="usage_asc">Lowest to Highest EOY Usage</option>
+                      <option value="days_desc">Highest to Lowest Days in Contract</option>
+                      <option value="days_asc">Lowest to Highest Days in Contract</option>
+                  </select>
+              </div>
+
               <div className="space-y-8 overflow-y-auto pr-4 flex-1 pb-10">
-                {metrics.eoyData.map((row, i) => {
+                {processedEoyData.map((row, i) => {
                     const eoy = parseCleanNumber(row.eoy_projected_net_import);
                     
                     // Fallback across potential column names for current net contract
@@ -1038,6 +1103,9 @@ export default function App() {
                       </div>
                     );
                 })}
+                {processedEoyData.length === 0 && (
+                   <div className="text-center text-slate-500 py-10">No accounts match your search.</div>
+                )}
               </div>
             </div>
 
