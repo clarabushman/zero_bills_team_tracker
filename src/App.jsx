@@ -67,6 +67,29 @@ const hasValidMpan = (val1, val2) => {
     return check(val1) || check(val2);
 };
 
+// CSV Exporter for Modals
+const exportToCSV = (dataList, filename) => {
+    if (!dataList || !dataList.length) return;
+    const headers = Object.keys(dataList[0]);
+    const csvRows = [headers.join(',')];
+    for (const row of dataList) {
+        const values = headers.map(header => {
+            const val = row[header] === null || row[header] === undefined ? '' : String(row[header]);
+            return `"${val.replace(/"/g, '""')}"`; // Escape quotes inside values
+        });
+        csvRows.push(values.join(','));
+    }
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.setAttribute('hidden', '');
+    a.setAttribute('href', url);
+    a.setAttribute('download', filename);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+};
+
 export default function App() {
   const [data, setData] = useState([]);
   const [activeTab, setActiveTab] = useState('Overview');
@@ -83,10 +106,17 @@ export default function App() {
   const [mpanTypeFilter, setMpanTypeFilter] = useState('All'); 
   const [eoySearchQuery, setEoySearchQuery] = useState('');
   const [eoySortBy, setEoySortBy] = useState('usage_desc');
+  
+  // NEW Search States
+  const [batteryProblemSearch, setBatteryProblemSearch] = useState('');
+  const [batterySiteSearch, setBatterySiteSearch] = useState('');
+  const [missingMpanSearch, setMissingMpanSearch] = useState('');
+  const [missingSmartReadsSearch, setMissingSmartReadsSearch] = useState('');
 
   // Global Portfolio Filters
   const [selectedTranches, setSelectedTranches] = useState(new Set());
   const [selectedSites, setSelectedSites] = useState(new Set());
+  const [tariffStatusFilter, setTariffStatusFilter] = useState('All'); // 'All', 'On Tariff', 'Not on Tariff'
   const [trancheOpen, setTrancheOpen] = useState(false);
   const [siteOpen, setSiteOpen] = useState(false);
   
@@ -133,9 +163,15 @@ export default function App() {
     return data.filter(row => {
       const matchTranche = selectedTranches.size === 0 || selectedTranches.has(row.tranche);
       const matchSite = selectedSites.size === 0 || selectedSites.has(row.site_name);
-      return matchTranche && matchSite;
+      
+      const onTariff = isZeroBills(row.import_tariff);
+      const matchTariff = tariffStatusFilter === 'All' ? true : 
+                          tariffStatusFilter === 'On Tariff' ? onTariff : 
+                          !onTariff;
+
+      return matchTranche && matchSite && matchTariff;
     });
-  }, [data, selectedTranches, selectedSites]);
+  }, [data, selectedTranches, selectedSites, tariffStatusFilter]);
 
   const filterOptions = useMemo(() => {
     const tranches = [...new Set(data.map(r => r.tranche))].filter(Boolean).sort();
@@ -145,12 +181,10 @@ export default function App() {
 
   // --- Metrics Calculations ---
   const metrics = useMemo(() => {
-    // Req 1: Overview
     const allAccounts = filteredData.filter(r => r.latest_account_number_for_address || r.import_mpans);
     const zbAccounts = allAccounts.filter(r => isZeroBills(r.import_tariff));
     const stdAccounts = allAccounts.filter(r => r.import_tariff && !isZeroBills(r.import_tariff));
 
-    // Site Breakdown
     const siteBreakdownOverview = {};
     allAccounts.forEach(r => {
       const site = r.site_name || 'Unknown';
@@ -165,7 +199,6 @@ export default function App() {
       }
     });
 
-    // Req 3: Tariff Issues
     const tariffIssues = filteredData.filter(r => {
       const impMismatch = r.kraken_import_tariff_valid_to && r.kraken_import_tariff_valid_to !== r.agreement_valid_to;
       const expMismatch = r.kraken_export_tariff_valid_to && r.kraken_export_tariff_valid_to !== r.agreement_valid_to;
@@ -173,19 +206,16 @@ export default function App() {
       return impMismatch || expMismatch || devWrongTariff;
     });
 
-    // Req 4: EV
     const evConfirmed = filteredData.filter(r => isTrue(r.ev_billed));
     const evSuspected = filteredData.filter(r => isTrue(r.suspected_ev));
     const noEv = filteredData.filter(r => !isTrue(r.ev_billed) && !isTrue(r.suspected_ev));
 
-    // Req 5: Battery
     const totalBattery = filteredData.length;
     const battSetup = filteredData.filter(r => isTrue(r.battery_setup));
     const battOnline = filteredData.filter(r => isTrue(r.battery_setup) && isTrue(r.battery_signal));
     const battOffline = filteredData.filter(r => isTrue(r.battery_setup) && !isTrue(r.battery_signal));
     const battNotSetup = filteredData.filter(r => !isTrue(r.battery_setup));
 
-    // Battery Sites Breakdown
     const batterySiteSummary = {};
     filteredData.forEach(r => {
         const site = r.site_name || 'Unknown';
@@ -213,19 +243,15 @@ export default function App() {
         }
     });
 
-    // Battery Problem Account List
     const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
 
-    // Past Battery Setup Delays
     const pastBatteryDelays = filteredData.filter(r => {
         const pastDays = String(r.days_without_battery_setup_past || '').trim().toLowerCase();
         return pastDays && pastDays !== 'null' && pastDays !== '0';
     }).sort((a,b) => parseFloat(b.days_without_battery_setup_past) - parseFloat(a.days_without_battery_setup_past));
 
-    // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // Req 8: Missing Smart Reads
     const missingSmartReads = filteredData.filter(r => {
         const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
         const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
@@ -236,7 +262,6 @@ export default function App() {
         return impStale || expStale;
     });
 
-    // Req 9: EOY Projection Chart Data
     const eoyData = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         parseCleanNumber(r.eoy_projected_net_import) !== 0 && 
@@ -244,7 +269,6 @@ export default function App() {
         String(r.days_this_contract).toLowerCase() !== 'null'
     );
       
-    // Explicitly isolate Portfolio Average EOY calculation
     const validEoyForAvg = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         String(r.eoy_projected_net_import).toLowerCase() !== 'null' && 
@@ -265,6 +289,7 @@ export default function App() {
       missingMpans, missingSmartReads, eoyData, avgEoy
     };
   }, [filteredData]);
+
 
   // --- EOY Projection Searching & Sorting ---
   const processedEoyData = useMemo(() => {
@@ -291,6 +316,31 @@ export default function App() {
 
     return processed;
   }, [metrics.eoyData, eoySearchQuery, eoySortBy]);
+
+
+  // --- Specific Tab Filters ---
+  const filteredBatterySites = useMemo(() => {
+      if (!batterySiteSearch) return metrics.batterySiteSummary;
+      return metrics.batterySiteSummary.filter(s => s.name.toLowerCase().includes(batterySiteSearch.toLowerCase()));
+  }, [metrics.batterySiteSummary, batterySiteSearch]);
+
+  const filteredBatteryProblems = useMemo(() => {
+      if (!batteryProblemSearch) return metrics.batteryProblemAccounts;
+      return metrics.batteryProblemAccounts.filter(r => String(r.latest_account_number_for_address || '').toLowerCase().includes(batteryProblemSearch.toLowerCase()));
+  }, [metrics.batteryProblemAccounts, batteryProblemSearch]);
+
+  const filteredMissingMpans = useMemo(() => {
+      let data = metrics.missingMpans.filter(r => mpanTypeFilter === 'All' || String(r.account_type).toLowerCase() === mpanTypeFilter.toLowerCase());
+      if (missingMpanSearch) {
+          data = data.filter(r => String(r.latest_account_number_for_address || '').toLowerCase().includes(missingMpanSearch.toLowerCase()));
+      }
+      return data;
+  }, [metrics.missingMpans, mpanTypeFilter, missingMpanSearch]);
+
+  const filteredMissingSmartReads = useMemo(() => {
+      if (!missingSmartReadsSearch) return metrics.missingSmartReads;
+      return metrics.missingSmartReads.filter(r => String(r.latest_account_number_for_address || '').toLowerCase().includes(missingSmartReadsSearch.toLowerCase()));
+  }, [metrics.missingSmartReads, missingSmartReadsSearch]);
 
 
   // --- Modal Logic ---
@@ -360,7 +410,10 @@ export default function App() {
                   className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 w-64"
                 />
               </div>
-              <button onClick={() => setDrillDownData(null)} className="p-2 hover:bg-slate-200 rounded-full transition"><X size={20}/></button>
+              <button onClick={() => exportToCSV(processedModalData, `${drillDownTitle.replace(/\s+/g, '_')}.csv`)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg transition flex items-center gap-2 text-sm font-semibold border border-indigo-200">
+                <Download size={16}/> Export CSV
+              </button>
+              <button onClick={() => setDrillDownData(null)} className="p-2 hover:bg-slate-200 rounded-full transition ml-2"><X size={20}/></button>
             </div>
           </div>
           <div className="overflow-auto p-4 flex-1">
@@ -430,6 +483,17 @@ export default function App() {
           
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold text-slate-500 flex items-center gap-1"><Filter size={16}/> Filters</span>
+
+            {/* NEW: Global Tariff Filter */}
+            <select 
+              value={tariffStatusFilter} 
+              onChange={e => setTariffStatusFilter(e.target.value)}
+              className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-slate-700"
+            >
+              <option value="All">All Tariffs</option>
+              <option value="On Tariff">On Tariff (Zero Bills)</option>
+              <option value="Not on Tariff">Not on Tariff</option>
+            </select>
             
             <div className="relative" ref={trancheRef}>
               <button onClick={() => setTrancheOpen(!trancheOpen)} className="px-4 py-2 text-sm border border-slate-300 rounded-lg bg-white flex items-center gap-2 hover:bg-slate-50">
@@ -700,7 +764,7 @@ export default function App() {
                 <span className="text-[10px] font-semibold text-indigo-500 mt-1">{(metrics.battSetup.length / metrics.totalBattery * 100 || 0).toFixed(1)}% of total</span>
               </div>
               <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50 text-center">
-                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online</span>
+                <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online (Signal OK)</span>
                 <span className="text-2xl font-black text-emerald-700">{metrics.battOnline.length}</span>
                 <div className="text-[10px] font-semibold text-emerald-600 mt-1 leading-tight">
                     {(metrics.battOnline.length / metrics.battSetup.length * 100 || 0).toFixed(1)}% of setup<br/>
@@ -724,9 +788,15 @@ export default function App() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
               <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
-                  <h3 className="font-bold text-slate-800 mb-6 flex items-center gap-2"><MapPin className="text-indigo-500"/> Site Progress Summary</h3>
+                  <div className="flex justify-between items-center mb-4">
+                      <h3 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="text-indigo-500"/> Site Progress</h3>
+                      <div className="relative">
+                          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                          <input type="text" placeholder="Search Site..." value={batterySiteSearch} onChange={e=>setBatterySiteSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-indigo-500 outline-none w-32" />
+                      </div>
+                  </div>
                   <div className="space-y-5 flex-1 max-h-96 overflow-y-auto pr-4">
-                      {metrics.batterySiteSummary.map((site, i) => {
+                      {filteredBatterySites.map((site, i) => {
                           const onlinePct = (site.online / site.total) * 100 || 0;
                           return (
                               <div key={i} className="flex flex-col gap-1 flex-1">
@@ -760,11 +830,18 @@ export default function App() {
                               </div>
                           );
                       })}
+                      {filteredBatterySites.length === 0 && <div className="text-slate-500 text-sm text-center py-4">No sites match search.</div>}
                   </div>
               </div>
 
               <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
-                <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts Requiring Attention</h3>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-slate-800 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts</h3>
+                  <div className="relative">
+                      <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                      <input type="text" placeholder="Search Account..." value={batteryProblemSearch} onChange={e=>setBatteryProblemSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
+                  </div>
+                </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg max-h-96">
                   <table className="w-full text-xs text-left whitespace-nowrap">
                     <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
@@ -780,7 +857,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 flex-1">
-                      {metrics.batteryProblemAccounts.map((r, i) => (
+                      {filteredBatteryProblems.map((r, i) => (
                         <tr key={i} className="hover:bg-slate-50">
                           <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
                           <td className="p-3 capitalize">{r.account_type}</td>
@@ -794,6 +871,7 @@ export default function App() {
                           <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
                         </tr>
                       ))}
+                      {filteredBatteryProblems.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -803,10 +881,16 @@ export default function App() {
             <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
                 <div className="flex justify-between items-center mb-6">
                     <h3 className="text-xl font-bold text-slate-800">Detailed Site Battery Tracker</h3>
-                    <div className="flex items-center gap-3 text-xs text-slate-500">
-                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm"></span> Online</div>
-                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-red-500 rounded-sm"></span> Offline</div>
-                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-300 rounded-sm"></span> Not Setup</div>
+                    <div className="flex items-center gap-4">
+                        <div className="relative">
+                          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                          <input type="text" placeholder="Search Site..." value={batterySiteSearch} onChange={e=>setBatterySiteSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-slate-500">
+                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm"></span> Online</div>
+                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-red-500 rounded-sm"></span> Offline</div>
+                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-300 rounded-sm"></span> Not Setup</div>
+                        </div>
                     </div>
                 </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg flex-1">
@@ -821,7 +905,7 @@ export default function App() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 flex-1">
-                            {metrics.batterySiteSummary.map((site, i) => {
+                            {filteredBatterySites.map((site, i) => {
                                 const onlinePct = (site.online / site.total) * 100 || 0;
                                 let progressBadgeColor = 'bg-red-100 text-red-800'; 
                                 if (onlinePct === 100) progressBadgeColor = 'bg-emerald-100 text-emerald-800';
@@ -866,6 +950,7 @@ export default function App() {
                                     </tr>
                                 );
                             })}
+                            {filteredBatterySites.length === 0 && <tr><td colSpan="5" className="p-6 text-center text-slate-500">No sites match your search.</td></tr>}
                         </tbody>
                     </table>
                 </div>
@@ -876,20 +961,24 @@ export default function App() {
         {/* Tab 5: Missing MPANs */}
         {activeTab === 'Missing MPANs' && (
           <div className="bg-white border rounded-xl shadow-sm overflow-hidden flex flex-col flex-1">
-            <div className="p-6 border-b flex justify-between items-center bg-slate-50">
+            <div className="p-6 border-b flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-slate-50">
               <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">Missing Export MPANs & Issues</h2>
               
-              <div className="flex gap-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                  <input type="text" placeholder="Search Account..." value={missingMpanSearch} onChange={e=>setMissingMpanSearch(e.target.value)} className="pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                </div>
                 <select 
                   value={mpanTypeFilter} 
                   onChange={e => setMpanTypeFilter(e.target.value)}
-                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500"
+                  className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
                 >
                   <option value="All">All Types</option>
                   <option value="Developer">Developer Only</option>
                   <option value="Customer">Customer Only</option>
                 </select>
-                <button onClick={() => handleDrillDown('All Missing MPANs', metrics.missingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">View Extracted List</button>
+                <button onClick={() => handleDrillDown('All Missing MPANs', filteredMissingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">View Extracted List</button>
               </div>
             </div>
             
@@ -908,9 +997,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 flex-1">
-                  {metrics.missingMpans
-                    .filter(r => mpanTypeFilter === 'All' || String(r.account_type).toLowerCase() === mpanTypeFilter.toLowerCase())
-                    .map((r, i) => {
+                  {filteredMissingMpans.map((r, i) => {
                       const impDen = String(r.import_energisation_status).toLowerCase() === 'denergised';
                       const expDen = String(r.export_energisation_status).toLowerCase() === 'denergised';
                       return (
@@ -929,7 +1016,7 @@ export default function App() {
                         </tr>
                       );
                   })}
-                  {metrics.missingMpans.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">All accounts have an Export MPAN.</td></tr>}
+                  {filteredMissingMpans.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">No matching accounts found.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -939,14 +1026,18 @@ export default function App() {
         {/* Tab 6: Missing Smart Reads */}
         {activeTab === 'Missing Smart Reads' && (
           <div className="bg-white border rounded-xl shadow-sm p-6 flex-1 flex flex-col">
-             <div className="mb-6 flex justify-between items-center border-b pb-4">
+             <div className="mb-6 flex flex-col md:flex-row justify-between md:items-center gap-4 border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old. (Safely ignores missing MPANs).</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old.</p>
+              </div>
+              <div className="relative w-full md:w-64">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                <input type="text" placeholder="Search Account..." value={missingSmartReadsSearch} onChange={e=>setMissingSmartReadsSearch(e.target.value)} className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
             </div>
 
-            {metrics.missingSmartReads.length === 0 ? (
+            {filteredMissingSmartReads.length === 0 && !missingSmartReadsSearch ? (
               <div className="flex flex-col items-center justify-center py-20 text-emerald-600 bg-emerald-50 rounded-xl border border-emerald-100 flex-1">
                 <Smile size={80} className="mb-6 text-emerald-500"/>
                 <h2 className="text-3xl font-black">All smart meters online!</h2>
@@ -967,7 +1058,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 flex-1">
-                    {metrics.missingSmartReads.map((r, i) => {
+                    {filteredMissingSmartReads.map((r, i) => {
                       // Verify MPANs exist before evaluating dates
                       const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
                       const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
@@ -993,6 +1084,7 @@ export default function App() {
                         </tr>
                       );
                     })}
+                    {filteredMissingSmartReads.length === 0 && <tr><td colSpan="7" className="p-6 text-center text-slate-500">No matching accounts found.</td></tr>}
                   </tbody>
                 </table>
               </div>
