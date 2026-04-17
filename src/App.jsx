@@ -38,7 +38,7 @@ const isZeroBills = (tariff) => String(tariff || '').toLowerCase().includes('zer
 const isTrue = (val) => String(val).toUpperCase() === 'TRUE';
 const getAddress = (r) => `${r.postal_number || ''} ${r.street_name || ''}`.trim();
 
-// NEW Robust Stale Date Checker (> 3 Days)
+// Stale date checker with UK date handling and strict midnight calendar math
 const isDateStale = (dateStr) => {
     if (!dateStr || String(dateStr).trim().toLowerCase() === 'null' || String(dateStr).trim() === '') return true;
     
@@ -61,7 +61,7 @@ const isDateStale = (dateStr) => {
     return daysOld > 3; 
 }
 
-// NEW Robust MPAN Checker
+// Robust MPAN Checker
 const hasValidMpan = (val1, val2) => {
     const check = (v) => v && String(v).trim() !== '' && String(v).trim().toLowerCase() !== 'null';
     return check(val1) || check(val2);
@@ -225,24 +225,21 @@ export default function App() {
     // Req 6: Missing MPANs
     const missingMpans = filteredData.filter(r => !r.export_mpan || String(r.export_mpan).toLowerCase() === 'null');
 
-    // NEW Req 8: Missing Smart Reads
+    // Req 8: Missing Smart Reads
     const missingSmartReads = filteredData.filter(r => {
-        // 1. Confirm if the meters actually exist (checking singular and plural column names just in case)
         const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
         const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
 
-        // 2. Only check the date if the meter exists
-        const impStale = hasImport && isDateStale(r.import_last_smart_read_date);
-        const expStale = hasExport && isDateStale(r.export_last_smart_read_date);
+        const impStale = hasImport ? isDateStale(r.import_last_smart_read_date) : false;
+        const expStale = hasExport ? isDateStale(r.export_last_smart_read_date) : false;
 
-        // 3. Flag account if either existing meter is stale
         return impStale || expStale;
     });
 
     // Req 9: EOY Projection Chart Data
     const eoyData = filteredData.filter(r => 
         r.eoy_projected_net_import && 
-        parseCleanNumber(r.eoy_projected_net_import) !== 0 &&
+        parseCleanNumber(r.eoy_projected_net_import) !== 0 && 
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
     );
@@ -690,26 +687,38 @@ export default function App() {
         {activeTab === 'Battery Issues' && (
           <div className="space-y-6 flex-1 flex flex-col">
             
+            {/* Top Stat Cards WITH PERCENTAGES */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center">
+              <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center text-center">
                 <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Total Portfolio</span>
                 <span className="text-2xl font-black text-slate-900">{metrics.totalBattery}</span>
+                <span className="text-[10px] text-transparent mt-1 select-none">Spacer</span>
               </div>
-              <div onClick={() => handleDrillDown('Batteries Setup', metrics.battSetup)} className="bg-white p-4 rounded-xl border border-indigo-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-indigo-50">
+              <div onClick={() => handleDrillDown('Batteries Setup', metrics.battSetup)} className="bg-white p-4 rounded-xl border border-indigo-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-indigo-50 text-center">
                 <span className="text-indigo-600 text-xs font-bold uppercase tracking-wider mb-1">Setup</span>
                 <span className="text-2xl font-black text-indigo-700">{metrics.battSetup.length}</span>
+                <span className="text-[10px] font-semibold text-indigo-500 mt-1">{(metrics.battSetup.length / metrics.totalBattery * 100 || 0).toFixed(1)}% of total</span>
               </div>
-              <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50">
+              <div onClick={() => handleDrillDown('Batteries Online', metrics.battOnline)} className="bg-white p-4 rounded-xl border border-emerald-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-emerald-50 text-center">
                 <span className="text-emerald-600 text-xs font-bold uppercase tracking-wider mb-1">Online (Signal OK)</span>
                 <span className="text-2xl font-black text-emerald-700">{metrics.battOnline.length}</span>
+                <div className="text-[10px] font-semibold text-emerald-600 mt-1 leading-tight">
+                    {(metrics.battOnline.length / metrics.battSetup.length * 100 || 0).toFixed(1)}% of setup<br/>
+                    <span className="text-emerald-600/70">{(metrics.battOnline.length / metrics.totalBattery * 100 || 0).toFixed(1)}% of total</span>
+                </div>
               </div>
-              <div onClick={() => handleDrillDown('Batteries Offline', metrics.battOffline)} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-red-50">
-                <span className="text-red-600 text-xs font-bold uppercase tracking-wider mb-1">Setup but Offline</span>
+              <div onClick={() => handleDrillDown('Batteries Offline', metrics.battOffline)} className="bg-white p-4 rounded-xl border border-red-200 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-red-50 text-center">
+                <span className="text-red-600 text-xs font-bold uppercase tracking-wider mb-1">Offline</span>
                 <span className="text-2xl font-black text-red-700">{metrics.battOffline.length}</span>
+                <div className="text-[10px] font-semibold text-red-500 mt-1 leading-tight">
+                    {(metrics.battOffline.length / metrics.battSetup.length * 100 || 0).toFixed(1)}% of setup<br/>
+                    <span className="text-red-500/70">{(metrics.battOffline.length / metrics.totalBattery * 100 || 0).toFixed(1)}% of total</span>
+                </div>
               </div>
-              <div onClick={() => handleDrillDown('Batteries Not Setup', metrics.battNotSetup)} className="bg-white p-4 rounded-xl border border-slate-300 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-slate-100">
+              <div onClick={() => handleDrillDown('Batteries Not Setup', metrics.battNotSetup)} className="bg-white p-4 rounded-xl border border-slate-300 shadow-sm flex flex-col justify-center items-center cursor-pointer hover:bg-slate-100 text-center">
                 <span className="text-slate-600 text-xs font-bold uppercase tracking-wider mb-1">Not Setup</span>
                 <span className="text-2xl font-black text-slate-700">{metrics.battNotSetup.length}</span>
+                <span className="text-[10px] font-semibold text-slate-500 mt-1">{(metrics.battNotSetup.length / metrics.totalBattery * 100 || 0).toFixed(1)}% of total</span>
               </div>
             </div>
 
@@ -959,7 +968,7 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 flex-1">
                     {metrics.missingSmartReads.map((r, i) => {
-                      // NEW ROBUST LOGIC: Verifies MPANs exist before evaluating dates
+                      // Verify MPANs exist before evaluating dates
                       const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
                       const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
 
