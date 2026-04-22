@@ -107,7 +107,7 @@ export default function App() {
   const [eoySearchQuery, setEoySearchQuery] = useState('');
   const [eoySortBy, setEoySortBy] = useState('usage_desc');
   
-  // NEW Search States
+  // Search States
   const [batteryProblemSearch, setBatteryProblemSearch] = useState('');
   const [batterySiteSearch, setBatterySiteSearch] = useState('');
   const [missingMpanSearch, setMissingMpanSearch] = useState('');
@@ -116,7 +116,7 @@ export default function App() {
   // Global Portfolio Filters
   const [selectedTranches, setSelectedTranches] = useState(new Set());
   const [selectedSites, setSelectedSites] = useState(new Set());
-  const [tariffStatusFilter, setTariffStatusFilter] = useState('All'); // 'All', 'On Tariff', 'Not on Tariff'
+  const [tariffStatusFilter, setTariffStatusFilter] = useState('All'); 
   const [trancheOpen, setTrancheOpen] = useState(false);
   const [siteOpen, setSiteOpen] = useState(false);
   
@@ -225,10 +225,20 @@ export default function App() {
                 company: r.company || 'N/A Company',
                 tranche: r.tranche || 'Not on Tariff',
                 total: 0, online: 0, offline: 0, notSetup: 0, 
+                totalSetupDelay: 0, totalOfflineDays: 0,
                 onlineData: [], offlineData: [], notSetupData: [] 
             };
         }
+        
         batterySiteSummary[site].total++;
+        
+        // Calculate aggregate delays for averages
+        const setupDelay = parseCleanNumber(r.days_still_without_battery_setup) + parseCleanNumber(r.days_without_battery_setup_past);
+        const offlineDays = parseCleanNumber(r.days_offline);
+        
+        batterySiteSummary[site].totalSetupDelay += setupDelay;
+        batterySiteSummary[site].totalOfflineDays += offlineDays;
+
         if (isTrue(r.battery_setup)) {
             if (isTrue(r.battery_signal)) {
                 batterySiteSummary[site].online++;
@@ -242,6 +252,16 @@ export default function App() {
             batterySiteSummary[site].notSetupData.push(r);
         }
     });
+
+    // Compute Site Averages for Battery Chart (Top 25 worst offending sites)
+    const siteDelayData = Object.values(batterySiteSummary).map(site => ({
+        ...site,
+        avgSetupDelay: parseFloat((site.totalSetupDelay / site.total).toFixed(1)),
+        avgOfflineDays: parseFloat((site.totalOfflineDays / site.total).toFixed(1))
+    }))
+    .filter(s => s.avgSetupDelay > 0 || s.avgOfflineDays > 0)
+    .sort((a,b) => (b.avgSetupDelay + b.avgOfflineDays) - (a.avgSetupDelay + a.avgOfflineDays))
+    .slice(0, 25);
 
     const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
 
@@ -285,11 +305,11 @@ export default function App() {
       evConfirmed, evSuspected, noEv,
       totalBattery, battSetup, battOnline, battOffline, battNotSetup,
       batterySiteSummary: Object.values(batterySiteSummary).sort((a,b) => b.total - a.total),
+      siteDelayData,
       batteryProblemAccounts, pastBatteryDelays,
       missingMpans, missingSmartReads, eoyData, avgEoy
     };
   }, [filteredData]);
-
 
   // --- EOY Projection Searching & Sorting ---
   const processedEoyData = useMemo(() => {
@@ -484,7 +504,6 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold text-slate-500 flex items-center gap-1"><Filter size={16}/> Filters</span>
 
-            {/* NEW: Global Tariff Filter */}
             <select 
               value={tariffStatusFilter} 
               onChange={e => setTariffStatusFilter(e.target.value)}
@@ -786,6 +805,26 @@ export default function App() {
               </div>
             </div>
 
+            {/* NEW GRAPHIC: Average Delays by Site */}
+            <div className="bg-white p-6 rounded-xl border shadow-sm flex flex-col">
+                <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="text-indigo-500"/> Average Battery Delays & Offline Time by Site</h3>
+                <p className="text-sm text-slate-500 mb-6">Identifies sites requiring attention due to high average setup delays or offline durations (Top 25 offenders).</p>
+                <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={metrics.siteDelayData} margin={{ top: 5, right: 30, left: 20, bottom: 80 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                            <XAxis dataKey="name" angle={-45} textAnchor="end" tick={{fontSize: 11}} interval={0} />
+                            <YAxis />
+                            <RechartsTooltip cursor={{fill: '#f1f5f9'}} />
+                            <Legend verticalAlign="top" wrapperStyle={{paddingBottom: '20px'}}/>
+                            <Bar dataKey="avgSetupDelay" name="Avg Setup Delay (Days)" stackId="a" fill="#f59e0b" />
+                            <Bar dataKey="avgOfflineDays" name="Avg Offline (Days)" stackId="a" fill="#ef4444" />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+                {metrics.siteDelayData.length === 0 && <div className="text-center text-slate-500 pb-10">No setup delays or offline data found.</div>}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
               <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
                   <div className="flex justify-between items-center mb-4">
@@ -851,26 +890,40 @@ export default function App() {
                         <th className="p-3">Address</th>
                         <th className="p-3">Site</th>
                         <th className="p-3">Status</th>
-                        <th className="p-3 text-red-600" title="Days still without battery setup">Days w/o Setup</th>
+                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days Offline / w/o Setup</th>
                         <th className="p-3" title="Days without setup in past (for online)">Past Days w/o Setup</th>
-                        <th className="p-3" title="% without setup">% Time w/o Setup</th>
+                        <th className="p-3" title="% without setup or % offline">% Issue Time</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 flex-1">
-                      {filteredBatteryProblems.map((r, i) => (
-                        <tr key={i} className="hover:bg-slate-50">
-                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
-                          <td className="p-3 capitalize">{r.account_type}</td>
-                          <td className="p-3">{getAddress(r)}</td>
-                          <td className="p-3">{r.site_name}</td>
-                          <td className="p-3 font-semibold">
-                            {!isTrue(r.battery_setup) ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
-                          </td>
-                          <td className="p-3 text-red-600 font-black">{r.days_still_without_battery_setup}</td>
-                          <td className="p-3">{r.days_without_battery_setup_past}</td>
-                          <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
-                        </tr>
-                      ))}
+                      {filteredBatteryProblems.map((r, i) => {
+                          const isOffline = isTrue(r.battery_setup) && !isTrue(r.battery_signal);
+                          const isNotSetup = !isTrue(r.battery_setup);
+                          
+                          return (
+                            <tr key={i} className="hover:bg-slate-50">
+                              <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                              <td className="p-3 capitalize">{r.account_type}</td>
+                              <td className="p-3">{getAddress(r)}</td>
+                              <td className="p-3">{r.site_name}</td>
+                              <td className="p-3 font-semibold">
+                                {isNotSetup ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
+                              </td>
+                              <td className="p-3 text-red-600 font-black">
+                                {isNotSetup ? r.days_still_without_battery_setup : (isOffline ? r.days_offline : '')}
+                              </td>
+                              <td className="p-3">
+                                {isNotSetup ? r.days_without_battery_setup_past : ''}
+                              </td>
+                              <td className="p-3">
+                                {isNotSetup 
+                                    ? (r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : '') 
+                                    : (isOffline ? (r.days_offline_percentage ? `${parseFloat(r.days_offline_percentage).toFixed(1)}%` : '') : '')
+                                }
+                              </td>
+                            </tr>
+                          );
+                      })}
                       {filteredBatteryProblems.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
                     </tbody>
                   </table>
