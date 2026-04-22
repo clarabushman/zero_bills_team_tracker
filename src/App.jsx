@@ -232,7 +232,6 @@ export default function App() {
         
         batterySiteSummary[site].total++;
         
-        // Calculate aggregate delays for averages
         const setupDelay = parseCleanNumber(r.days_still_without_battery_setup) + parseCleanNumber(r.days_without_battery_setup_past);
         const offlineDays = parseCleanNumber(r.days_offline);
         
@@ -253,7 +252,6 @@ export default function App() {
         }
     });
 
-    // Compute Site Averages for Battery Chart (Top 25 worst offending sites)
     const siteDelayData = Object.values(batterySiteSummary).map(site => ({
         ...site,
         avgSetupDelay: parseFloat((site.totalSetupDelay / site.total).toFixed(1)),
@@ -805,7 +803,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* NEW GRAPHIC: Average Delays by Site */}
+            {/* GRAPHIC: Average Delays by Site */}
             <div className="bg-white p-6 rounded-xl border shadow-sm flex flex-col">
                 <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="text-indigo-500"/> Average Battery Delays & Offline Time by Site</h3>
                 <p className="text-sm text-slate-500 mb-6">Identifies sites requiring attention due to high average setup delays or offline durations (Top 25 offenders).</p>
@@ -890,15 +888,18 @@ export default function App() {
                         <th className="p-3">Address</th>
                         <th className="p-3">Site</th>
                         <th className="p-3">Status</th>
-                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days Offline / w/o Setup</th>
+                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days (Offline/Not Setup)</th>
                         <th className="p-3" title="Days without setup in past (for online)">Past Days w/o Setup</th>
-                        <th className="p-3" title="% without setup or % offline">% Issue Time</th>
+                        <th className="p-3 text-center" title="Has been setup but never sent a reading">Setup but Readings Zero</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 flex-1">
                       {filteredBatteryProblems.map((r, i) => {
                           const isOffline = isTrue(r.battery_setup) && !isTrue(r.battery_signal);
                           const isNotSetup = !isTrue(r.battery_setup);
+                          
+                          // Check if zero readings explicit flag is set
+                          const isZeroReadings = String(r.days_offline_percentage).includes('100% (Zero Readings)');
                           
                           return (
                             <tr key={i} className="hover:bg-slate-50">
@@ -915,11 +916,8 @@ export default function App() {
                               <td className="p-3">
                                 {isNotSetup ? r.days_without_battery_setup_past : ''}
                               </td>
-                              <td className="p-3">
-                                {isNotSetup 
-                                    ? (r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : '') 
-                                    : (isOffline ? (r.days_offline_percentage ? `${parseFloat(r.days_offline_percentage).toFixed(1)}%` : '') : '')
-                                }
+                              <td className="p-3 text-center text-lg">
+                                {isZeroReadings ? '🚩' : ''}
                               </td>
                             </tr>
                           );
@@ -1003,7 +1001,6 @@ export default function App() {
                                     </tr>
                                 );
                             })}
-                            {filteredBatterySites.length === 0 && <tr><td colSpan="5" className="p-6 text-center text-slate-500">No sites match your search.</td></tr>}
                         </tbody>
                     </table>
                 </div>
