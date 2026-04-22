@@ -888,8 +888,7 @@ export default function App() {
                         <th className="p-3">Address</th>
                         <th className="p-3">Site</th>
                         <th className="p-3">Status</th>
-                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days (Offline/Not Setup)</th>
-                        <th className="p-3" title="Days without setup in past (for online)">Past Days w/o Setup</th>
+                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days Offline / w/o Setup</th>
                         <th className="p-3 text-center" title="Has been setup but never sent a reading">Setup but Readings Zero</th>
                       </tr>
                     </thead>
@@ -913,16 +912,13 @@ export default function App() {
                               <td className="p-3 text-red-600 font-black">
                                 {isNotSetup ? r.days_still_without_battery_setup : (isOffline ? r.days_offline : '')}
                               </td>
-                              <td className="p-3">
-                                {isNotSetup ? r.days_without_battery_setup_past : ''}
-                              </td>
                               <td className="p-3 text-center text-lg">
                                 {isZeroReadings ? '🚩' : ''}
                               </td>
                             </tr>
                           );
                       })}
-                      {filteredBatteryProblems.length === 0 && <tr><td colSpan="8" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
+                      {filteredBatteryProblems.length === 0 && <tr><td colSpan="7" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -1079,7 +1075,7 @@ export default function App() {
              <div className="mb-6 flex flex-col md:flex-row justify-between md:items-center gap-4 border-b pb-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
-                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old.</p>
+                <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old. (Safely ignores missing MPANs).</p>
               </div>
               <div className="relative w-full md:w-64">
                 <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
