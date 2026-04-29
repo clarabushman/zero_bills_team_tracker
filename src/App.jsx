@@ -109,6 +109,8 @@ export default function App() {
   
   // Search States
   const [batteryProblemSearch, setBatteryProblemSearch] = useState('');
+  const [batteryProblemSort, setBatteryProblemSort] = useState({ key: 'derived_days_issue', direction: 'desc' });
+  
   const [batterySiteSearch, setBatterySiteSearch] = useState('');
   const [missingMpanSearch, setMissingMpanSearch] = useState('');
   const [missingSmartReadsSearch, setMissingSmartReadsSearch] = useState('');
@@ -261,7 +263,18 @@ export default function App() {
     .sort((a,b) => (b.avgSetupDelay + b.avgOfflineDays) - (a.avgSetupDelay + a.avgOfflineDays))
     .slice(0, 25);
 
-    const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal));
+    // Derived fields for easy sorting in Problematic Accounts
+    const batteryProblemAccounts = filteredData.filter(r => !isTrue(r.battery_setup) || !isTrue(r.battery_signal)).map(r => {
+        const isNotSetup = !isTrue(r.battery_setup);
+        const isOffline = isTrue(r.battery_setup) && !isTrue(r.battery_signal);
+        return {
+            ...r,
+            derived_status: isNotSetup ? 'Not Setup' : 'Offline',
+            derived_days_issue: isNotSetup ? parseCleanNumber(r.days_still_without_battery_setup) : (isOffline ? parseCleanNumber(r.days_offline) : 0),
+            derived_past_setup_delay: parseCleanNumber(r.days_without_battery_setup_past),
+            is_zero_readings: String(r.days_offline_percentage).includes('100% (Zero Readings)') ? 1 : 0
+        };
+    });
 
     const pastBatteryDelays = filteredData.filter(r => {
         const pastDays = String(r.days_without_battery_setup_past || '').trim().toLowerCase();
@@ -280,13 +293,37 @@ export default function App() {
         return impStale || expStale;
     });
 
-    const eoyData = filteredData.filter(r => 
+    const eoyDataRaw = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         parseCleanNumber(r.eoy_projected_net_import) !== 0 && 
         r.days_this_contract && 
         String(r.days_this_contract).toLowerCase() !== 'null'
     );
-      
+    
+    // EOY Site Summary for Average Graph
+    const eoySiteMap = {};
+    eoyDataRaw.forEach(r => {
+        const site = r.site_name || 'Unknown';
+        if (!eoySiteMap[site]) {
+            eoySiteMap[site] = { name: site, totalEoy: 0, count: 0, accounts: [] };
+        }
+        eoySiteMap[site].totalEoy += parseCleanNumber(r.eoy_projected_net_import);
+        eoySiteMap[site].count++;
+        eoySiteMap[site].accounts.push({
+            ...r,
+            derived_account: r.latest_account_number_for_address || r.import_mpans,
+            derived_proj_eoy: parseCleanNumber(r.eoy_projected_net_import),
+            derived_current_net: parseCleanNumber(r.net_import_contract) || parseCleanNumber(r.net_import_contract_ev_adjusted) || 0,
+            derived_days_on_tariff: r.days_on_tariff || r.days_this_contract
+        });
+    });
+    
+    const eoySiteSummary = Object.values(eoySiteMap).map(s => ({
+        name: s.name,
+        avgEoy: parseFloat((s.totalEoy / s.count).toFixed(0)),
+        accounts: s.accounts
+    })).sort((a,b) => b.avgEoy - a.avgEoy);
+
     const validEoyForAvg = filteredData.filter(r => 
         r.eoy_projected_net_import && 
         String(r.eoy_projected_net_import).toLowerCase() !== 'null' && 
@@ -305,9 +342,10 @@ export default function App() {
       batterySiteSummary: Object.values(batterySiteSummary).sort((a,b) => b.total - a.total),
       siteDelayData,
       batteryProblemAccounts, pastBatteryDelays,
-      missingMpans, missingSmartReads, eoyData, avgEoy
+      missingMpans, missingSmartReads, eoyData: eoyDataRaw, eoySiteSummary, avgEoy
     };
   }, [filteredData]);
+
 
   // --- EOY Projection Searching & Sorting ---
   const processedEoyData = useMemo(() => {
@@ -342,10 +380,44 @@ export default function App() {
       return metrics.batterySiteSummary.filter(s => s.name.toLowerCase().includes(batterySiteSearch.toLowerCase()));
   }, [metrics.batterySiteSummary, batterySiteSearch]);
 
-  const filteredBatteryProblems = useMemo(() => {
-      if (!batteryProblemSearch) return metrics.batteryProblemAccounts;
-      return metrics.batteryProblemAccounts.filter(r => String(r.latest_account_number_for_address || '').toLowerCase().includes(batteryProblemSearch.toLowerCase()));
-  }, [metrics.batteryProblemAccounts, batteryProblemSearch]);
+  const sortedAndFilteredBatteryProblems = useMemo(() => {
+      let data = [...metrics.batteryProblemAccounts];
+      
+      if (batteryProblemSearch) {
+          data = data.filter(r => String(r.latest_account_number_for_address || '').toLowerCase().includes(batteryProblemSearch.toLowerCase()));
+      }
+      
+      if (batteryProblemSort.key) {
+          data.sort((a, b) => {
+              let valA = a[batteryProblemSort.key] || '';
+              let valB = b[batteryProblemSort.key] || '';
+              
+              if (['derived_days_issue', 'derived_past_setup_delay', 'is_zero_readings'].includes(batteryProblemSort.key)) {
+                  valA = parseFloat(valA) || 0;
+                  valB = parseFloat(valB) || 0;
+              } else {
+                  valA = String(valA).toLowerCase();
+                  valB = String(valB).toLowerCase();
+              }
+              
+              if (valA < valB) return batteryProblemSort.direction === 'asc' ? -1 : 1;
+              if (valA > valB) return batteryProblemSort.direction === 'asc' ? 1 : -1;
+              return 0;
+          });
+      }
+      
+      return data;
+  }, [metrics.batteryProblemAccounts, batteryProblemSearch, batteryProblemSort]);
+
+  const handleProblemSort = (key) => {
+      let direction = 'asc';
+      if (batteryProblemSort.key === key && batteryProblemSort.direction === 'asc') direction = 'desc';
+      setBatteryProblemSort({ key, direction });
+  };
+  
+  const ProblemSortIcon = ({ colKey }) => (
+      <ArrowUpDown size={12} className={`inline ml-1 cursor-pointer hover:text-indigo-800 ${batteryProblemSort.key === colKey ? 'text-indigo-600' : 'text-slate-300'}`} />
+  );
 
   const filteredMissingMpans = useMemo(() => {
       let data = metrics.missingMpans.filter(r => mpanTypeFilter === 'All' || String(r.account_type).toLowerCase() === mpanTypeFilter.toLowerCase());
@@ -408,6 +480,7 @@ export default function App() {
     const isStandardOverview = drillDownTitle.includes('Standard Accounts');
     const isTotalOverview = drillDownTitle.includes('All Accounts');
     const hideContractInfo = isStandardOverview || isTotalOverview;
+    const isEoyBreakdown = drillDownTitle.includes('EOY Average');
 
     const SortIcon = ({ colKey }) => (
       <ArrowUpDown size={12} className={`inline ml-1 ${sortConfig.key === colKey ? 'text-indigo-600' : 'text-slate-300'}`} />
@@ -438,41 +511,65 @@ export default function App() {
             <table className="w-full text-sm text-left whitespace-nowrap">
               <thead className="bg-slate-100 text-slate-600 sticky top-0 z-10 shadow-sm cursor-pointer">
                 <tr>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('latest_account_number_for_address')}>Account / MPAN <SortIcon colKey="latest_account_number_for_address"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postal_number')}>Address <SortIcon colKey="postal_number"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postcode')}>Postcode <SortIcon colKey="postcode"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('site_name')}>Site <SortIcon colKey="site_name"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('account_type')}>Type <SortIcon colKey="account_type"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('import_tariff')}>Import Tariff <SortIcon colKey="import_tariff"/></th>
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('export_tariff')}>Export Tariff <SortIcon colKey="export_tariff"/></th>
-                  
-                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_from')}>Valid From <SortIcon colKey="agreement_valid_from"/></th>}
-                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_to')}>Valid To <SortIcon colKey="agreement_valid_to"/></th>}
-                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_this_contract')}>Days (Contract) <SortIcon colKey="days_this_contract"/></th>}
-                  {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_on_tariff')}>Days (Tariff) <SortIcon colKey="days_on_tariff"/></th>}
-                  
-                  <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('operations_team')}>Ops Team <SortIcon colKey="operations_team"/></th>
-                  <th className="p-3 text-center">PSR</th>
+                  {isEoyBreakdown ? (
+                      <>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('derived_account')}>Account / MPAN <SortIcon colKey="derived_account"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('site_name')}>Site <SortIcon colKey="site_name"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('derived_proj_eoy')}>Projected EOY Net Import <SortIcon colKey="derived_proj_eoy"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('derived_current_net')}>Current Net Import <SortIcon colKey="derived_current_net"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('derived_days_on_tariff')}>Days on Tariff <SortIcon colKey="derived_days_on_tariff"/></th>
+                      </>
+                  ) : (
+                      <>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('latest_account_number_for_address')}>Account / MPAN <SortIcon colKey="latest_account_number_for_address"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postal_number')}>Address <SortIcon colKey="postal_number"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('postcode')}>Postcode <SortIcon colKey="postcode"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('site_name')}>Site <SortIcon colKey="site_name"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('account_type')}>Type <SortIcon colKey="account_type"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('import_tariff')}>Import Tariff <SortIcon colKey="import_tariff"/></th>
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('export_tariff')}>Export Tariff <SortIcon colKey="export_tariff"/></th>
+                        
+                        {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_from')}>Valid From <SortIcon colKey="agreement_valid_from"/></th>}
+                        {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('agreement_valid_to')}>Valid To <SortIcon colKey="agreement_valid_to"/></th>}
+                        {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_this_contract')}>Days (Contract) <SortIcon colKey="days_this_contract"/></th>}
+                        {!hideContractInfo && <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('days_on_tariff')}>Days (Tariff) <SortIcon colKey="days_on_tariff"/></th>}
+                        
+                        <th className="p-3 hover:bg-slate-200" onClick={() => handleSort('operations_team')}>Ops Team <SortIcon colKey="operations_team"/></th>
+                        <th className="p-3 text-center">PSR</th>
+                      </>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 flex-1">
                 {processedModalData.map((row, i) => (
                   <tr key={i} className="hover:bg-slate-50">
-                    <td className="p-3 font-medium text-slate-900">{row.latest_account_number_for_address || row.import_mpans}</td>
-                    <td className="p-3">{getAddress(row)}</td>
-                    <td className="p-3">{row.postcode}</td>
-                    <td className="p-3 font-medium">{row.site_name}</td>
-                    <td className="p-3 capitalize">{row.account_type}</td>
-                    <td className="p-3 max-w-[150px] truncate" title={row.import_tariff}>{row.import_tariff}</td>
-                    <td className="p-3 max-w-[150px] truncate" title={row.export_tariff}>{row.export_tariff}</td>
-                    
-                    {!hideContractInfo && <td className="p-3">{row.agreement_valid_from}</td>}
-                    {!hideContractInfo && <td className="p-3">{row.agreement_valid_to}</td>}
-                    {!hideContractInfo && <td className="p-3">{row.days_this_contract}</td>}
-                    {!hideContractInfo && <td className="p-3">{row.days_on_tariff}</td>}
-                    
-                    <td className="p-3">{row.operations_team}</td>
-                    <td className="p-3 text-center">{isTrue(row.is_psr) ? '✅' : '⬜'}</td>
+                    {isEoyBreakdown ? (
+                        <>
+                            <td className="p-3 font-medium text-slate-900">{row.derived_account}</td>
+                            <td className="p-3 font-medium">{row.site_name}</td>
+                            <td className="p-3 font-bold text-indigo-600">{row.derived_proj_eoy} kWh</td>
+                            <td className="p-3 font-semibold text-slate-600">{row.derived_current_net} kWh</td>
+                            <td className="p-3">{row.derived_days_on_tariff}</td>
+                        </>
+                    ) : (
+                        <>
+                            <td className="p-3 font-medium text-slate-900">{row.latest_account_number_for_address || row.import_mpans}</td>
+                            <td className="p-3">{getAddress(row)}</td>
+                            <td className="p-3">{row.postcode}</td>
+                            <td className="p-3 font-medium">{row.site_name}</td>
+                            <td className="p-3 capitalize">{row.account_type}</td>
+                            <td className="p-3 max-w-[150px] truncate" title={row.import_tariff}>{row.import_tariff}</td>
+                            <td className="p-3 max-w-[150px] truncate" title={row.export_tariff}>{row.export_tariff}</td>
+                            
+                            {!hideContractInfo && <td className="p-3">{row.agreement_valid_from}</td>}
+                            {!hideContractInfo && <td className="p-3">{row.agreement_valid_to}</td>}
+                            {!hideContractInfo && <td className="p-3">{row.days_this_contract}</td>}
+                            {!hideContractInfo && <td className="p-3">{row.days_on_tariff}</td>}
+                            
+                            <td className="p-3">{row.operations_team}</td>
+                            <td className="p-3 text-center">{isTrue(row.is_psr) ? '✅' : '⬜'}</td>
+                        </>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -824,6 +921,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+              
               <div className="bg-white p-6 rounded-xl border shadow-sm flex-1 flex flex-col">
                   <div className="flex justify-between items-center mb-4">
                       <h3 className="font-bold text-slate-800 flex items-center gap-2"><MapPin className="text-indigo-500"/> Site Progress</h3>
@@ -871,6 +969,7 @@ export default function App() {
                   </div>
               </div>
 
+              {/* Problematic Accounts (Filterable & Sortable) */}
               <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts</h3>
@@ -880,45 +979,37 @@ export default function App() {
                   </div>
                 </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg max-h-96">
-                  <table className="w-full text-xs text-left whitespace-nowrap">
+                  <table className="w-full text-xs text-left whitespace-nowrap select-none">
                     <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm flex-1">
                       <tr>
-                        <th className="p-3">Account</th>
-                        <th className="p-3">Type</th>
-                        <th className="p-3">Address</th>
-                        <th className="p-3">Site</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3 text-red-600" title="Days still without battery setup or days offline">Days Offline / w/o Setup</th>
-                        <th className="p-3 text-center" title="Has been setup but never sent a reading">Setup but Readings Zero</th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200" onClick={() => handleProblemSort('latest_account_number_for_address')}>Account <ProblemSortIcon colKey="latest_account_number_for_address"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200" onClick={() => handleProblemSort('account_type')}>Type <ProblemSortIcon colKey="account_type"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200" onClick={() => handleProblemSort('postal_number')}>Address <ProblemSortIcon colKey="postal_number"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200" onClick={() => handleProblemSort('site_name')}>Site <ProblemSortIcon colKey="site_name"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200" onClick={() => handleProblemSort('derived_status')}>Status <ProblemSortIcon colKey="derived_status"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200 text-red-600" onClick={() => handleProblemSort('derived_days_issue')} title="Days still without battery setup or days offline">Days Offline / w/o Setup <ProblemSortIcon colKey="derived_days_issue"/></th>
+                        <th className="p-3 cursor-pointer hover:bg-slate-200 text-center" onClick={() => handleProblemSort('is_zero_readings')} title="Has been setup but never sent a reading">Setup but Readings Zero <ProblemSortIcon colKey="is_zero_readings"/></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 flex-1">
-                      {filteredBatteryProblems.map((r, i) => {
-                          const isOffline = isTrue(r.battery_setup) && !isTrue(r.battery_signal);
-                          const isNotSetup = !isTrue(r.battery_setup);
-                          
-                          // Check if zero readings explicit flag is set
-                          const isZeroReadings = String(r.days_offline_percentage).includes('100% (Zero Readings)');
-                          
-                          return (
-                            <tr key={i} className="hover:bg-slate-50">
-                              <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
-                              <td className="p-3 capitalize">{r.account_type}</td>
-                              <td className="p-3">{getAddress(r)}</td>
-                              <td className="p-3">{r.site_name}</td>
-                              <td className="p-3 font-semibold">
-                                {isNotSetup ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
-                              </td>
-                              <td className="p-3 text-red-600 font-black">
-                                {isNotSetup ? r.days_still_without_battery_setup : (isOffline ? r.days_offline : '')}
-                              </td>
-                              <td className="p-3 text-center text-lg">
-                                {isZeroReadings ? '🚩' : ''}
-                              </td>
-                            </tr>
-                          );
-                      })}
-                      {filteredBatteryProblems.length === 0 && <tr><td colSpan="7" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
+                      {sortedAndFilteredBatteryProblems.map((r, i) => (
+                        <tr key={i} className="hover:bg-slate-50">
+                          <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                          <td className="p-3 capitalize">{r.account_type}</td>
+                          <td className="p-3">{getAddress(r)}</td>
+                          <td className="p-3">{r.site_name}</td>
+                          <td className="p-3 font-semibold">
+                            {r.derived_status === 'Not Setup' ? <span className="text-slate-500">Not Setup</span> : <span className="text-red-600">Offline</span>}
+                          </td>
+                          <td className="p-3 text-red-600 font-black">
+                            {r.derived_days_issue || ''}
+                          </td>
+                          <td className="p-3 text-center text-lg">
+                            {r.is_zero_readings === 1 ? '🚩' : ''}
+                          </td>
+                        </tr>
+                      ))}
+                      {sortedAndFilteredBatteryProblems.length === 0 && <tr><td colSpan="7" className="p-6 text-center text-slate-500">No accounts match your search.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -1001,6 +1092,42 @@ export default function App() {
                     </table>
                 </div>
             </div>
+
+            {/* Bottom Section: Past Battery Setup Delays */}
+            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col">
+                <div className="mb-4">
+                    <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Clock className="text-amber-500"/> Past Battery Setup Delay</h2>
+                    <p className="text-sm text-slate-500 mt-1">Accounts with historical delays in getting the battery online.</p>
+                </div>
+                <div className="overflow-auto border border-slate-100 rounded-lg max-h-80">
+                    <table className="w-full text-sm text-left whitespace-nowrap">
+                        <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm">
+                            <tr>
+                                <th className="p-3 font-semibold">Account</th>
+                                <th className="p-3 font-semibold">Type</th>
+                                <th className="p-3 font-semibold">Address</th>
+                                <th className="p-3 font-semibold">Site</th>
+                                <th className="p-3 font-semibold text-amber-600">Past Setup Delay (Days)</th>
+                                <th className="p-3 font-semibold">% Delay Time</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                            {metrics.pastBatteryDelays.map((r, i) => (
+                                <tr key={i} className="hover:bg-slate-50">
+                                    <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
+                                    <td className="p-3 capitalize">{r.account_type}</td>
+                                    <td className="p-3">{getAddress(r)}</td>
+                                    <td className="p-3">{r.site_name}</td>
+                                    <td className="p-3 font-bold text-amber-600">{r.days_without_battery_setup_past}</td>
+                                    <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
+                                </tr>
+                            ))}
+                            {metrics.pastBatteryDelays.length === 0 && <tr><td colSpan="6" className="p-6 text-center text-slate-500">No historical delays found.</td></tr>}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
           </div>
         )}
 
@@ -1138,16 +1265,38 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 7: EOY Projection & Past Delays */}
+        {/* Tab 7: EOY Projection */}
         {activeTab === 'EOY Projection' && (
           <div className="flex flex-col gap-6">
             
-            {/* Top Section: EOY Projections */}
+            {/* NEW GRAPHIC: Average EOY Projected Position per Site */}
+            <div className="bg-white p-6 rounded-xl border shadow-sm flex flex-col">
+                <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="text-indigo-500"/> Average EOY Projected Net Position by Site</h3>
+                <p className="text-sm text-slate-500 mb-6">Click on any bar to see the individual accounts, their projected EOY vs current Net Import, and days on tariff.</p>
+                <div className="h-[400px] w-full cursor-pointer">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={metrics.eoySiteSummary} margin={{ top: 5, right: 30, left: 20, bottom: 80 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                            <XAxis dataKey="name" angle={-45} textAnchor="end" tick={{fontSize: 11}} interval={0} />
+                            <YAxis />
+                            <RechartsTooltip cursor={{fill: '#f1f5f9'}} formatter={(value) => [`${value} kWh`, 'Average EOY']} />
+                            <Bar 
+                                dataKey="avgEoy" 
+                                name="Average EOY Net Import" 
+                                fill="#8b5cf6" 
+                                onClick={(data) => handleDrillDown(`EOY Average Breakdown: ${data.name}`, data.accounts)}
+                            />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
+
+            {/* Bottom Section: Individual EOY Projections */}
             <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col h-[700px]">
               <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
                 <div>
-                  <h2 className="text-lg font-bold text-slate-800">EOY Projected Net Import vs Allowance</h2>
-                  <p className="text-sm text-slate-500 mt-1">Horizontal bar chart showing EOY Projections. The dotted line marks the current net import position.</p>
+                  <h2 className="text-lg font-bold text-slate-800">Individual EOY Projected Net Import vs Allowance</h2>
+                  <p className="text-sm text-slate-500 mt-1">Horizontal bar chart showing individual EOY Projections. The dotted line marks the current net import position.</p>
                   <div className="flex gap-4 mt-4 text-xs font-medium">
                     <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#ef4444'}}></span> Over 4000</span>
                     <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm" style={{backgroundColor: '#ea580c'}}></span> 3000 - 4000</span>
@@ -1248,42 +1397,6 @@ export default function App() {
                 )}
               </div>
             </div>
-
-            {/* Bottom Section: Past Battery Setup Delays */}
-            <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col">
-                <div className="mb-4">
-                    <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Clock className="text-amber-500"/> Past Battery Setup Delay</h2>
-                    <p className="text-sm text-slate-500 mt-1">Accounts with historical delays in getting the battery online.</p>
-                </div>
-                <div className="overflow-auto border border-slate-100 rounded-lg max-h-80">
-                    <table className="w-full text-sm text-left whitespace-nowrap">
-                        <thead className="bg-slate-50 text-slate-600 sticky top-0 shadow-sm">
-                            <tr>
-                                <th className="p-3 font-semibold">Account</th>
-                                <th className="p-3 font-semibold">Type</th>
-                                <th className="p-3 font-semibold">Address</th>
-                                <th className="p-3 font-semibold">Site</th>
-                                <th className="p-3 font-semibold text-amber-600">Past Setup Delay (Days)</th>
-                                <th className="p-3 font-semibold">% Delay Time</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {metrics.pastBatteryDelays.map((r, i) => (
-                                <tr key={i} className="hover:bg-slate-50">
-                                    <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address}</td>
-                                    <td className="p-3 capitalize">{r.account_type}</td>
-                                    <td className="p-3">{getAddress(r)}</td>
-                                    <td className="p-3">{r.site_name}</td>
-                                    <td className="p-3 font-bold text-amber-600">{r.days_without_battery_setup_past}</td>
-                                    <td className="p-3">{r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''}</td>
-                                </tr>
-                            ))}
-                            {metrics.pastBatteryDelays.length === 0 && <tr><td colSpan="6" className="p-6 text-center text-slate-500">No historical delays found.</td></tr>}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            
           </div>
         )}
 
