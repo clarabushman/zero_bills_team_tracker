@@ -23,7 +23,6 @@
   "devDependencies": {
     "tailwindcss": "^3.3.3",
     "autoprefixer": "^10.4.14",
-    "postcss": "^8.4.27",
-    "googleapis": "^128.0.0"
+    "postcss": "^8.4.27"
   }
 }
