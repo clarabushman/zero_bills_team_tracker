@@ -134,53 +134,31 @@ export default function App() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-// Find your Google Sheet IDs from their URLs. 
-// E.g., https://docs.google.com/spreadsheets/d/THIS_LONG_STRING_IS_THE_ID/edit
-const PIPELINE_SHEET_ID = "your_pipeline_sheet_id_here";
-const TRACKER_SHEET_ID = "your_tracker_sheet_id_here";
-const TARIFF_SHEET_ID = "your_tariff_sheet_id_here";
-
-useEffect(() => {
-  const loadData = async () => {
-    try {
-      const fetchSheet = async (sheetId, tabName) => {
-        // Calls your secure Vercel backend
-        const response = await fetch(`/api/sheets?id=${sheetId}&range=${tabName}`);
-        if (!response.ok) return [];
-        
-        const rows = await response.json(); // Returns a 2D array
-        if (!rows || rows.length < 2) return [];
-        
-        const rawHeaders = rows[0].map(h => String(h || '').trim());
-        
-        // Convert the 2D array into an array of objects
-        return rows.slice(1).map(row => {
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const response = await fetch('/data.csv');
+        if (!response.ok) throw new Error("Missing data.csv in public folder.");
+        const text = await response.text();
+        const rows = parseCSV(text);
+        const rawHeaders = rows[0].map(h => h?.trim());
+        const parsed = rows.slice(1).filter(r => r.length > 1).map(row => {
           let obj = {};
-          rawHeaders.forEach((h, i) => { 
-            if (h) obj[h] = String(row[i] || '').trim(); 
+          rawHeaders.forEach((h, i) => {
+              let val = row[i]?.trim();
+              if (h === 'tranche' && (!val || val.toLowerCase() === 'null')) {
+                  val = 'Not on Tariff';
+              }
+              obj[h] = val;
           });
           return obj;
         });
-      };
-
-      // Ensure the "tabName" exactly matches the tab name at the bottom of your Google Sheet
-      const [pipeRes, trackRes, tariffRes] = await Promise.all([
-        fetchSheet(PIPELINE_SHEET_ID, 'Sheet1'), 
-        fetchSheet(TRACKER_SHEET_ID, 'Sheet1'),
-        fetchSheet(TARIFF_SHEET_ID, 'Sheet1')
-      ]);
-
-      setPipelineData(pipeRes);
-      setTrackerData(trackRes);
-      setTariffData(tariffRes);
-    } catch (err) { 
-      console.error(err);
-    } finally { 
-      setLoading(false); 
-    }
-  };
-  loadData();
-}, []);
+        setData(parsed);
+      } catch (err) { setError(err.message); }
+      finally { setLoading(false); }
+    };
+    loadData();
+  }, []);
 
   // --- Filtering ---
   const filteredData = useMemo(() => {
