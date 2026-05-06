@@ -118,7 +118,7 @@ export default function App() {
   // Global Portfolio Filters
   const [selectedTranches, setSelectedTranches] = useState(new Set());
   const [selectedSites, setSelectedSites] = useState(new Set());
-  const [tariffStatusFilter, setTariffStatusFilter] = useState('All'); 
+  const [tariffStatusFilter, setTariffStatusFilter] = useState('All'); // 'All', 'On Tariff', 'Not on Tariff'
   const [trancheOpen, setTrancheOpen] = useState(false);
   const [siteOpen, setSiteOpen] = useState(false);
   
@@ -433,6 +433,126 @@ export default function App() {
   }, [metrics.missingSmartReads, missingSmartReadsSearch]);
 
 
+  // --- Export Handlers for Specific Tables ---
+  
+  const handleExportTariffIssues = () => {
+      const exportData = metrics.tariffIssues.map(r => {
+          const devWrong = String(r.account_type).toLowerCase() === 'developer' && isZeroBills(r.import_tariff);
+          const impMismatch = r.kraken_import_tariff_valid_to && r.kraken_import_tariff_valid_to !== r.agreement_valid_to;
+          const expMismatch = r.kraken_export_tariff_valid_to && r.kraken_export_tariff_valid_to !== r.agreement_valid_to;
+          let issueFlag = '';
+          if (devWrong) issueFlag += "Wrong Dev Tariff. ";
+          if (impMismatch || expMismatch) issueFlag += "Date Mismatch.";
+
+          return {
+              "Account / MPAN": r.latest_account_number_for_address || r.import_mpans || '',
+              "Account Type": r.account_type || '',
+              "Address": getAddress(r),
+              "Import Tariff": r.import_tariff || '',
+              "Export Tariff": r.export_tariff || '',
+              "Agreement Valid To": r.agreement_valid_to || '',
+              "Kraken Import To": r.kraken_import_tariff_valid_to || 'N/A',
+              "Kraken Export To": r.kraken_export_tariff_valid_to || 'N/A',
+              "Issue Flag": issueFlag.trim()
+          };
+      });
+      exportToCSV(exportData, 'tariff_issues.csv');
+  };
+
+  const handleExportProblematicCSV = () => {
+      const exportData = sortedAndFilteredBatteryProblems.map(r => ({
+          "Account": r.latest_account_number_for_address || '',
+          "Type": r.account_type || '',
+          "Address": getAddress(r),
+          "Site": r.site_name || '',
+          "Status": r.derived_status || '',
+          "Days Offline / w/o Setup": r.derived_days_issue || '',
+          "Setup but Readings Zero": r.is_zero_readings === 1 ? 'Yes' : 'No'
+      }));
+      exportToCSV(exportData, 'problematic_accounts.csv');
+  };
+
+  const handleExportDetailedBattery = () => {
+      const exportData = filteredBatterySites.map(site => {
+          const onlinePct = site.total > 0 ? ((site.online / site.total) * 100).toFixed(1) : 0;
+          return {
+              "Company": site.company || '',
+              "Site (Tranche)": `${site.name} (${site.tranche})`,
+              "Committed Total": site.total,
+              "Online": site.online,
+              "Offline": site.offline,
+              "Not Setup": site.notSetup,
+              "Progress (%)": `${onlinePct}%`
+          };
+      });
+      exportToCSV(exportData, 'detailed_battery_tracker.csv');
+  };
+
+  const handleExportPastDelays = () => {
+      const exportData = metrics.pastBatteryDelays.map(r => ({
+          "Account": r.latest_account_number_for_address || '',
+          "Type": r.account_type || '',
+          "Address": getAddress(r),
+          "Site": r.site_name || '',
+          "Past Setup Delay (Days)": r.days_without_battery_setup_past || '',
+          "% Delay Time": r.without_battery_setup_percentage ? `${parseFloat(r.without_battery_setup_percentage).toFixed(1)}%` : ''
+      }));
+      exportToCSV(exportData, 'past_battery_delays.csv');
+  };
+
+  const handleExportMissingMpans = () => {
+      const exportData = filteredMissingMpans.map(r => {
+          const impDen = String(r.import_energisation_status).toLowerCase() === 'denergised';
+          const expDen = String(r.export_energisation_status).toLowerCase() === 'denergised';
+          let issue = 'Missing Export MPAN';
+          if (impDen || expDen) issue += ' | Denergised Status detected';
+          return {
+              "Account / MPAN": r.latest_account_number_for_address || r.import_mpans || '',
+              "Type": r.account_type || '',
+              "Address": getAddress(r),
+              "Postcode": r.postcode || '',
+              "Site": r.site_name || '',
+              "Import Energisation": r.import_energisation_status || '',
+              "Export Energisation": r.export_energisation_status || '',
+              "Detected Issues": issue
+          };
+      });
+      exportToCSV(exportData, 'missing_mpans.csv');
+  };
+
+  const handleExportMissingSmartReads = () => {
+      const exportData = filteredMissingSmartReads.map(r => {
+          const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
+          const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
+          return {
+              "Account": r.latest_account_number_for_address || r.import_mpans || '',
+              "Type": r.account_type || '',
+              "Address": getAddress(r),
+              "Postcode": r.postcode || '',
+              "Site": r.site_name || '',
+              "Import Last Read": hasImport ? (r.import_last_smart_read_date || 'Missing') : 'No MPAN',
+              "Export Last Read": hasExport ? (r.export_last_smart_read_date || 'Missing') : 'No MPAN'
+          };
+      });
+      exportToCSV(exportData, 'missing_smart_reads.csv');
+  };
+
+  const handleExportEOY = () => {
+      const exportData = processedEoyData.map(r => {
+          const eoy = parseCleanNumber(r.eoy_projected_net_import);
+          const currentNet = parseCleanNumber(r.net_import_contract) || parseCleanNumber(r.net_import_contract_ev_adjusted) || 0;
+          return {
+              "Account": r.latest_account_number_for_address || r.import_mpans || 'Unknown Account',
+              "Projected EOY Net Import (kWh)": eoy.toFixed(0),
+              "Current Net Import (kWh)": currentNet.toFixed(0),
+              "Days Into Contract": r.days_this_contract || '',
+              "Status": eoy < 0 ? 'Net Exporter' : 'Net Importer'
+          };
+      });
+      exportToCSV(exportData, 'eoy_projections.csv');
+  };
+
+
   // --- Modal Logic ---
   const handleDrillDown = (title, list) => {
     setDrillDownTitle(title);
@@ -482,6 +602,40 @@ export default function App() {
     const hideContractInfo = isStandardOverview || isTotalOverview;
     const isEoyBreakdown = drillDownTitle.includes('EOY Average');
 
+    const handleExportModalCSV = () => {
+        const exportData = processedModalData.map(r => {
+            if (isEoyBreakdown) {
+                return {
+                    "Account / MPAN": r.derived_account || '',
+                    "Site": r.site_name || '',
+                    "Projected EOY Net Import (kWh)": r.derived_proj_eoy !== undefined ? r.derived_proj_eoy : '',
+                    "Current Net Import (kWh)": r.derived_current_net !== undefined ? r.derived_current_net : '',
+                    "Days on Tariff": r.derived_days_on_tariff || ''
+                };
+            } else {
+                const row = {
+                    "Account / MPAN": r.latest_account_number_for_address || r.import_mpans || '',
+                    "Address": getAddress(r),
+                    "Postcode": r.postcode || '',
+                    "Site": r.site_name || '',
+                    "Type": r.account_type || '',
+                    "Import Tariff": r.import_tariff || '',
+                    "Export Tariff": r.export_tariff || ''
+                };
+                if (!hideContractInfo) {
+                    row["Valid From"] = r.agreement_valid_from || '';
+                    row["Valid To"] = r.agreement_valid_to || '';
+                    row["Days (Contract)"] = r.days_this_contract || '';
+                    row["Days (Tariff)"] = r.days_on_tariff || '';
+                }
+                row["Ops Team"] = r.operations_team || '';
+                row["PSR"] = isTrue(r.is_psr) ? 'Yes' : 'No';
+                return row;
+            }
+        });
+        exportToCSV(exportData, `${drillDownTitle.replace(/\s+/g, '_')}.csv`);
+    };
+
     const SortIcon = ({ colKey }) => (
       <ArrowUpDown size={12} className={`inline ml-1 ${sortConfig.key === colKey ? 'text-indigo-600' : 'text-slate-300'}`} />
     );
@@ -501,7 +655,7 @@ export default function App() {
                   className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 w-64"
                 />
               </div>
-              <button onClick={() => exportToCSV(processedModalData, `${drillDownTitle.replace(/\s+/g, '_')}.csv`)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg transition flex items-center gap-2 text-sm font-semibold border border-indigo-200">
+              <button onClick={handleExportModalCSV} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg transition flex items-center gap-2 text-sm font-semibold border border-indigo-200">
                 <Download size={16}/> Export CSV
               </button>
               <button onClick={() => setDrillDownData(null)} className="p-2 hover:bg-slate-200 rounded-full transition ml-2"><X size={20}/></button>
@@ -755,7 +909,14 @@ export default function App() {
                 <h2 className="text-lg font-bold text-red-700 flex items-center gap-2"><AlertTriangle size={20}/> Tariff Discrepancies ({metrics.tariffIssues.length})</h2>
                 <p className="text-sm text-red-600/80 mt-1">End dates don't match agreement, or Developer is incorrectly on Zero Bills.</p>
               </div>
-              <button onClick={() => handleDrillDown('All Tariff Issues', metrics.tariffIssues)} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50">View as List</button>
+              <div className="flex gap-2">
+                  <button onClick={handleExportTariffIssues} className="px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-100 flex items-center gap-1.5 transition">
+                      <Download size={14}/> Export
+                  </button>
+                  <button onClick={() => handleDrillDown('All Tariff Issues', metrics.tariffIssues)} className="px-4 py-2 bg-white border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 transition">
+                      View as List
+                  </button>
+              </div>
             </div>
             <div className="overflow-x-auto p-4">
               <table className="w-full text-sm text-left whitespace-nowrap">
@@ -865,7 +1026,6 @@ export default function App() {
         {activeTab === 'Battery Issues' && (
           <div className="space-y-6 flex-1 flex flex-col">
             
-            {/* Top Stat Cards WITH PERCENTAGES */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="bg-white p-4 rounded-xl border shadow-sm flex flex-col justify-center items-center text-center">
                 <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Total Portfolio</span>
@@ -900,7 +1060,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* GRAPHIC: Average Delays by Site */}
             <div className="bg-white p-6 rounded-xl border shadow-sm flex flex-col">
                 <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="text-indigo-500"/> Average Battery Delays & Offline Time by Site</h3>
                 <p className="text-sm text-slate-500 mb-6">Identifies sites requiring attention due to high average setup delays or offline durations (Top 25 offenders).</p>
@@ -969,7 +1128,6 @@ export default function App() {
                   </div>
               </div>
 
-              {/* Problematic Accounts (Filterable & Sortable) */}
               <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts</h3>
@@ -979,7 +1137,7 @@ export default function App() {
                           <input type="text" placeholder="Search Account..." value={batteryProblemSearch} onChange={e=>setBatteryProblemSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
                       </div>
                       <button 
-                          onClick={() => exportToCSV(sortedAndFilteredBatteryProblems, 'problematic_accounts.csv')} 
+                          onClick={handleExportProblematicCSV} 
                           className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md transition flex items-center gap-2 text-xs font-semibold border border-indigo-200"
                           title="Export Problematic Accounts"
                       >
@@ -1033,12 +1191,15 @@ export default function App() {
                           <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
                           <input type="text" placeholder="Search Site..." value={batterySiteSearch} onChange={e=>setBatterySiteSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-slate-500">
-                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm"></span> Online</div>
-                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-red-500 rounded-sm"></span> Offline</div>
-                            <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-300 rounded-sm"></span> Not Setup</div>
-                        </div>
+                        <button onClick={handleExportDetailedBattery} className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md transition flex items-center gap-2 text-xs font-semibold border border-indigo-200">
+                          <Download size={14}/> Export
+                        </button>
                     </div>
+                </div>
+                <div className="mb-4 flex items-center gap-3 text-xs text-slate-500 justify-end">
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-emerald-500 rounded-sm"></span> Online</div>
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-red-500 rounded-sm"></span> Offline</div>
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 bg-slate-300 rounded-sm"></span> Not Setup</div>
                 </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg flex-1">
                     <table className="w-full text-sm text-left whitespace-nowrap">
@@ -1102,11 +1263,15 @@ export default function App() {
                 </div>
             </div>
 
-            {/* Bottom Section: Past Battery Setup Delays */}
             <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col">
-                <div className="mb-4">
-                    <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Clock className="text-amber-500"/> Past Battery Setup Delay</h2>
-                    <p className="text-sm text-slate-500 mt-1">Accounts with historical delays in getting the battery online.</p>
+                <div className="mb-4 flex justify-between items-center">
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Clock className="text-amber-500"/> Past Battery Setup Delay</h2>
+                        <p className="text-sm text-slate-500 mt-1">Accounts with historical delays in getting the battery online.</p>
+                    </div>
+                    <button onClick={handleExportPastDelays} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md transition flex items-center gap-2 text-sm font-semibold border border-indigo-200">
+                        <Download size={14}/> Export
+                    </button>
                 </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg max-h-80">
                     <table className="w-full text-sm text-left whitespace-nowrap">
@@ -1136,7 +1301,7 @@ export default function App() {
                     </table>
                 </div>
             </div>
-
+            
           </div>
         )}
 
@@ -1160,7 +1325,7 @@ export default function App() {
                   <option value="Developer">Developer Only</option>
                   <option value="Customer">Customer Only</option>
                 </select>
-                <button onClick={() => handleDrillDown('All Missing MPANs', filteredMissingMpans)} className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition flex items-center gap-1.5">View Extracted List</button>
+                <button onClick={handleExportMissingMpans} className="px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-100 transition flex items-center gap-1.5"><Download size={14}/> Export CSV</button>
               </div>
             </div>
             
@@ -1182,6 +1347,9 @@ export default function App() {
                   {filteredMissingMpans.map((r, i) => {
                       const impDen = String(r.import_energisation_status).toLowerCase() === 'denergised';
                       const expDen = String(r.export_energisation_status).toLowerCase() === 'denergised';
+                      let issue = 'Missing Export MPAN';
+                      if (impDen || expDen) issue += ' | Denergised Status detected';
+                      
                       return (
                         <tr key={i} className="hover:bg-slate-50 flex-1">
                           <td className="p-3 font-medium text-slate-900">{r.latest_account_number_for_address || r.import_mpans}</td>
@@ -1192,8 +1360,7 @@ export default function App() {
                           <td className={`p-3 ${impDen ? 'text-red-600 font-bold' : ''}`}>{r.import_energisation_status}</td>
                           <td className={`p-3 ${expDen ? 'text-red-600 font-bold' : ''}`}>{r.export_energisation_status}</td>
                           <td className="p-3 text-xs font-semibold text-red-600 bg-red-50/30">
-                            <div>Missing Export MPAN</div>
-                            {(impDen || expDen) && <div>Denergised Status detected</div>}
+                            <div>{issue}</div>
                           </td>
                         </tr>
                       );
@@ -1213,9 +1380,12 @@ export default function App() {
                 <h2 className="text-lg font-bold text-slate-800">Accounts with Missing Smart Reads</h2>
                 <p className="text-sm text-slate-500 mt-1">Checking both import and export dates. Flagged if last read is over 3 days old. (Safely ignores missing MPANs).</p>
               </div>
-              <div className="relative w-full md:w-64">
-                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
-                <input type="text" placeholder="Search Account..." value={missingSmartReadsSearch} onChange={e=>setMissingSmartReadsSearch(e.target.value)} className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+              <div className="flex items-center gap-3 w-full md:w-auto">
+                  <div className="relative flex-1 md:w-64">
+                    <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                    <input type="text" placeholder="Search Account..." value={missingSmartReadsSearch} onChange={e=>setMissingSmartReadsSearch(e.target.value)} className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+                  </div>
+                  <button onClick={handleExportMissingSmartReads} className="px-4 py-2 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-100 transition flex items-center gap-1.5"><Download size={14}/> Export</button>
               </div>
             </div>
 
@@ -1241,7 +1411,6 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-slate-100 flex-1">
                     {filteredMissingSmartReads.map((r, i) => {
-                      // Verify MPANs exist before evaluating dates
                       const hasImport = hasValidMpan(r.import_mpans, r.import_mpan);
                       const hasExport = hasValidMpan(r.export_mpans, r.export_mpan);
 
@@ -1255,8 +1424,6 @@ export default function App() {
                           <td className="p-3">{getAddress(r)}</td>
                           <td className="p-3">{r.postcode}</td>
                           <td className="p-3 font-medium text-indigo-700">{r.site_name}</td>
-                          
-                          {/* Clean display handling */}
                           <td className={`p-3 text-center font-semibold ${impStale ? 'text-red-600' : (!hasImport ? 'text-slate-400 italic' : '')}`}>
                             {hasImport ? (r.import_last_smart_read_date || 'Missing') : 'No MPAN'}
                           </td>
@@ -1278,7 +1445,6 @@ export default function App() {
         {activeTab === 'EOY Projection' && (
           <div className="flex flex-col gap-6">
             
-            {/* NEW GRAPHIC: Average EOY Projected Position per Site */}
             <div className="bg-white p-6 rounded-xl border shadow-sm flex flex-col">
                 <h3 className="font-bold text-slate-800 mb-2 flex items-center gap-2"><BarChart3 className="text-indigo-500"/> Average EOY Projected Net Position by Site</h3>
                 <p className="text-sm text-slate-500 mb-6">Click on any bar to see the individual accounts, their projected EOY vs current Net Import, and days on tariff.</p>
@@ -1300,7 +1466,6 @@ export default function App() {
                 </div>
             </div>
 
-            {/* Bottom Section: Individual EOY Projections */}
             <div className="bg-white border rounded-xl shadow-sm p-6 flex flex-col h-[700px]">
               <div className="mb-6 border-b pb-4 flex flex-col md:flex-row justify-between md:items-end gap-4">
                 <div>
@@ -1319,8 +1484,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Controls: Search and Sort */}
-              <div className="flex flex-col md:flex-row gap-4 mb-6">
+              <div className="flex flex-col md:flex-row gap-4 mb-6 items-center">
                   <div className="relative flex-1 max-w-md">
                       <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"/>
                       <input 
@@ -1341,6 +1505,7 @@ export default function App() {
                       <option value="days_desc">Highest to Lowest Days in Contract</option>
                       <option value="days_asc">Lowest to Highest Days in Contract</option>
                   </select>
+                  <button onClick={handleExportEOY} className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-sm font-semibold transition flex items-center gap-2 whitespace-nowrap"><Download size={14}/> Export CSV</button>
               </div>
 
               <div className="space-y-8 overflow-y-auto pr-4 flex-1 pb-10">
