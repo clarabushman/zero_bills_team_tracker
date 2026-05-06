@@ -973,9 +973,18 @@ export default function App() {
               <div className="lg:col-span-2 bg-white p-6 rounded-xl border shadow-sm overflow-hidden flex flex-col">
                 <div className="flex justify-between items-center mb-4">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2"><BatteryWarning className="text-red-500"/> Problematic Accounts</h3>
-                  <div className="relative">
-                      <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
-                      <input type="text" placeholder="Search Account..." value={batteryProblemSearch} onChange={e=>setBatteryProblemSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
+                  <div className="flex items-center gap-3">
+                      <div className="relative">
+                          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"/>
+                          <input type="text" placeholder="Search Account..." value={batteryProblemSearch} onChange={e=>setBatteryProblemSearch(e.target.value)} className="pl-8 pr-3 py-1.5 border border-slate-300 rounded-md text-sm focus:ring-1 focus:ring-indigo-500 outline-none w-48" />
+                      </div>
+                      <button 
+                          onClick={() => exportToCSV(sortedAndFilteredBatteryProblems, 'problematic_accounts.csv')} 
+                          className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-md transition flex items-center gap-2 text-xs font-semibold border border-indigo-200"
+                          title="Export Problematic Accounts"
+                      >
+                          <Download size={14}/> Export
+                      </button>
                   </div>
                 </div>
                 <div className="overflow-auto border border-slate-100 rounded-lg max-h-96">
